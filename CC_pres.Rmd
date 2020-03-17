@@ -1,0 +1,340 @@
+---
+title: "Game, Set, Stat: A Comparison of Model Performance Using a Variety of Tennis
+  Metrics"
+author: "Brady Anderson"
+date: "February 25, 2020"
+output: 
+  beamer_presentation:
+    theme: Boadilla
+    colortheme: crane
+    fig_crop: no
+header-includes:
+  - \AtBeginDocument{\title[Game, Set, Stat]{Game, Set, Stat - A Comparison of Model Performance Using a Variety of Tennis Metrics}}
+  - \usepackage{booktabs}
+  - \usepackage{multirow}
+  - \usepackage{hyperref}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+
+#############################################
+###### Loading Packages #####################
+#############################################
+library(fastDummies)
+library(lubridate)
+require(MASS) 
+library(dplyr)
+library(leaps)
+library(glmnet)
+library(chron)
+library(ggplot2)
+library(glmnetcr)
+library(splines)
+library(mgcv)
+library(caret)
+library(leaps)
+library(FNN)
+library(pls)
+library(class)
+library(MLmetrics)
+library(randomForest)
+library(sqldf)
+library(knitr)
+library(tidyverse)  
+
+#### Load in workspace data ####
+load("CC_final.Rdata")
+```
+
+## Motivation
+
+- Shift in the men's professional game (ATP)
+  - 70% of points between 0 to 4 shots
+- Importance of each point
+  - World #1 wins $\approx$ 55% of points in a season the past 20 years
+  - Wins $90^+$% of matches
+
+## Goals
+
+- Detect variable influence
+- Determine model accuracy 
+- Measure which model performs best
+- Learn several model implementations in R
+
+## Model Performance
+
+- Test Error Rate
+- Return on Investment (ROI)
+
+## Dataset - Sources
+
+- Point-by-point shot data
+  - [Match Charting Project](http://www.tennisabstract.com/charting/meta.html) (Jeff Sackmann)
+- Betting lines data
+  - http://www.tennis-data.co.uk/alldata.php
+
+## Dataset - Variables
+
+\begin{table}[h]
+\footnotesize
+\centering
+\begin{tabular}{lcc}
+\toprule
+Variable & Description & Type\\
+\midrule
+\textbf{Ace.DF.ratio} & Ratio of Aces to Double Faults & Numeric\\
+\textbf{BP.Save.Pct} & Break Points Saved (\%) & Numeric\\
+\textbf{Net.Wpct} & Points Won at Net (\%) & Numeric\\
+\textbf{Overall.Wpct} & Points Won (\%) & Numeric\\
+\textbf{Rank.Pts.Diff} & ATP Ranking Points & Integer\\
+\textbf{Serve1.Pct} & 1st Serves In (\%) & Numeric\\
+\textbf{Serve1.Wpct} & 1st Serve Points Won (\%) & Numeric\\
+\textbf{Serve2.Wpct} & 2nd Serve Points Won (\%) & Numeric\\
+\textbf{Serve.Plus1.Pct} & Serves Followed by a Forehand Points Won (\%) & Numeric\\
+\textbf{Surface.Clay} & Match Played on Clay Court & Indicator 0-1\\
+\textbf{Surface.Grass} & Match Played on Grass Court & Indicator 0-1\\
+\textbf{Win.Err.Ratio} & Ratio of Winners to Errors & Numeric\\
+\textbf{Zero.to.Four.Wpct} & Points Won between 0-4 Shots (\%) & Numeric\\
+\bottomrule
+\end{tabular}
+\caption{Summary of Variables}
+\end{table}
+- Use differences in average past data as predictors for test set
+
+## Dataset - Division
+
+- **Training Set (2009-2015)**
+  - Build optimal models
+  - 565 matches
+- **Validation Set (2016-2017)**
+  - Tune for optimal hyperparameters ($\lambda$ in Ridge/Lasso)
+  - 129 matches
+- **Testing Set (2018-2019)**
+  - Combine Training/Validation set for final model building
+  - Acquire performance metrics
+  - 158 matches
+
+## Dataset - Player Distribution
+
+```{r match.chart, fig.height=6}
+ggplot(names_final_all,aes(x=Player,y=Matches))+
+  geom_bar(stat="identity",fill="blue")+
+  labs(title="Charted Match Distribution")+
+  xlab("Player")+
+  theme(title = element_text(face="bold",color="blue",size=16),axis.text.x = element_text(angle=90,size=8,color="blue",vjust=0.5))+
+  scale_x_discrete(limits=players_names,breaks=players_names[seq(1,length(players_names),by=2)])
+```
+
+## Methods 
+
+- Logistic Regression
+  - Ridge Regression
+  - Lasso Regression
+  - Principal Components Regression (PCR)
+- Linear Discriminant Analysis (LDA)
+  - LDA with top PC
+- Generalized Additive Model (GAM)
+  - GAM with top PC
+- Random Forest
+- KNN
+  - KNN with top PC
+
+## Model Results - Accuracy
+
+\begin{table}[!htbp]
+\centering
+\begin{tabular}{lll}
+\toprule
+Model & Type & Error Rate\\
+\midrule
+Logistic & Full & 44.9\%\\
+Logistic & Ridge Regularized & 45.6\%\\
+Logistic & Lasso Regularized & 44.9\%\\
+Logistic & PCA Compressed & 43.7\%\\
+LDA & Full & 46.2\%\\
+LDA & PC Compressed & 44.3\%\\
+GAM & Full & 45.6\%\\
+GAM & PC Compressed & 44.3\%\\
+Random Forest & Full & 44.9\%\\
+\textbf{KNN} & \textbf{Full} & \textbf{43.0\%}\\
+KNN & PC Compressed & 43.7\%\\
+\bottomrule
+\end{tabular}
+\caption{Test Error Rates}
+\end{table}
+
+## Model Results - Variable Importance
+
+```{r var.importance}
+# How to explain
+varImpPlot(rf.train9,main="Variable Importance",col="blue")
+# P-values not robust due to correlation issues and non-independence in data used to predict future
+  # However - Overall.Wpct, Rank.Pts.Diff only significant ones there 
+```
+
+
+## Betting Strategies
+
+1. All Matches
+\begin{equation}
+  r_i =
+    \begin{cases}
+      c, & \text{if $p_i^{model} > 0.5$} \\
+      0, & \text{otherwise}
+    \end{cases}       
+\end{equation}
+
+2. Edge
+\begin{equation}
+  r_i =
+    \begin{cases}
+      c, & \text{if $p_i^{model} > p_i^{implied}+0.05$} \\
+      0, & \text{otherwise}
+    \end{cases}       
+\end{equation}
+
+3. Kelly Criterion 
+\begin{equation}
+  r_i =
+    \begin{cases}
+      c*\frac{p_i^{model}b_i - (1-p_i^{model})}{b_i}, & \text{if $p_i^{model} > p_i^{implied} + 0.05$} \\
+      0, & \text{otherwise}
+    \end{cases}       
+\end{equation}
+
+- Compare Class 1($<$ 5 matches) vs Class 2 (5$+$ matches)
+
+
+## ROI Results
+
+\begin{table}[t]
+\centering
+\fontsize{6}{6}\selectfont
+\begin{minipage}{.45\textwidth}
+\begin{tabular}{cccc}
+\hline
+Model                                                                       & Class                 & Strategy & ROI                           \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -3.38                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 5.28}   \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -5.42                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -0.29                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 14.00}  \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{009901} Logistic}}}      & \multirow{-3}{*}{(2)} & Kelly    & {\color[HTML]{009901} 4.55}  \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -9.08                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -9.51                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -7.82                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -8.03                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -9.05                         \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{CB0000} Ridge}}}         & \multirow{-3}{*}{(2)} & Kelly    & -5.00                        \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -11.50                        \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -8.12                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -9.34                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -10.17                        \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -10.28                        \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{CB0000} Lasso}}}         & \multirow{-3}{*}{(2)} & Kelly    & -11.27                       \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -7.36                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 1.35}   \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -13.78                       \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -1.37                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 7.92}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{Logistic PCA}}                         & \multirow{-3}{*}{(2)} & Kelly    & -6.48                         \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -7.51                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 1.34}   \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -7.82                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -5.77                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 8.78}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{LDA Full}}                             & \multirow{-3}{*}{(2)} & Kelly    & {\color[HTML]{009901} 1.03} \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -9.16                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -6.54                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -16.29                       \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -3.76                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -1.88                         \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{CB0000} LDA PCA}}}       & \multirow{-3}{*}{(2)} & Kelly    & -10.22   \\
+\hline
+\end{tabular}
+\end{minipage}
+\begin{minipage}{.45\textwidth}
+\begin{tabular}{cccc}
+\hline
+Model                                                                       & Class                 & Strategy & ROI 
+                        \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -3.00                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 4.01}   \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -5.01                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & {\color[HTML]{009901} 0.22}   \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 10.64}  \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{009901} GAM Full}}}      & \multirow{-3}{*}{(2)} & Kelly    & -0.67                         \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -9.13                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 0.93}   \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -13.38                         \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -5.04                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 6.21}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{GAM PCA}}                              & \multirow{-3}{*}{(2)} & Kelly    & -9.01                         \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -2.41                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 4.21}   \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -4.87                         \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -0.81                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 10.26}  \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{009901} Random Forest}}} & \multirow{-3}{*}{(2)} & Kelly    & {\color[HTML]{009901} 0.21}  \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -7.49                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & -1.80                         \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -7.44                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -7.83                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 1.41}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{KNN Full}}                             & \multirow{-3}{*}{(2)} & Kelly    & -1.40                        \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -12.50                        \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 0.74}   \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -0.81                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -10.39                        \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 9.29}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{KNN PCA}}                              & \multirow{-3}{*}{(2)} & Kelly    & {\color[HTML]{333333} -4.89}  \\
+\hline
+\end{tabular}
+\end{minipage}
+\end{table}
+
+## Conclusion
+
+- KNN was the most accurate model
+- Logistic Regression and Random Forest produced the highest ROI
+- Overall $\Rightarrow$ Logistic Regresion or Random Forest
+
+## Limitations
+
+- Non-representative data
+  - More matches from top players
+- Limited data for some players
+  - Irregularity in time for averaging
+- Charting differences
+
+## Further Study
+
+- Complete data
+- Model adjustments
+  - Time series incorporation
+- WTA models
+
+## Work Cited
+
+\fontsize{10pt}{6.2}\selectfont
+
+1. James, G., Witten, D., Trevor, H., & Tibshirani, R. (2013). *An Introduction to Statistical Learning*. New York : Springer.
+
+2. J. Kelly. "A new interpretation of information rate". *IRE Transactions on Information Theory*, 2(3):917–926, 1956.
+
+3. Lopez, Michael J., and Gregory J. Matthews. "Building an NCAA men’s basketball predictive model and quantifying its success." *Journal of Quantitative Analysis in Sports* 11.1 (2015): 5-12.
+
+4. O’Shannessy, Craig. “The First 4 Shots.” (2017).
+
+5. Sackmann, Jeff. “Tennis Abstract: Match Charting Project Metadata.” \url{tennisabstract.com}, (2019), \url{www.tennisabstract.com/charting/meta.html}.
+
+6. Sipko, Michal, and William Knottenbelt. "Machine learning for the prediction of professional tennis matches." *MEng computing-final year project, Imperial College London* (2015).
+
+7. Tennis Betting | Tennis Results | Tennis Odds. \url{http://www.tennis-data.co.uk/alldata.php} (2019). 
+
+## Thank you
+
+- Questions?

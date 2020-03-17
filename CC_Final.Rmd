@@ -1,0 +1,2343 @@
+---
+title: 'Game, Set, Stat: A Comparison of Model Performance Using a Variety of Tennis
+  Metrics'
+author: "Brady Anderson"
+date: "February 10, 2020"
+output:
+  pdf_document:
+    fig_crop: no
+  word_document: default
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{multirow}
+- \usepackage[table,xcdraw]{xcolor}
+- \usepackage{hyperref}
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+```{r packages}
+#############################################
+#####Installling Packages####################
+#############################################
+# install.packages("fastDummies")
+# install.packages("glmnetcr")
+# install.packages("MLmetrics")
+# install.packages("sqldf")
+
+#############################################
+###### Loading Packages #######################
+#############################################
+library(fastDummies)
+library(lubridate)
+require(MASS) 
+library(dplyr)
+library(leaps)
+library(glmnet)
+library(chron)
+library(ggplot2)
+library(glmnetcr)
+library(splines)
+library(mgcv)
+library(caret)
+library(leaps)
+library(FNN)
+library(pls)
+library(class)
+library(MLmetrics)
+library(randomForest)
+library(sqldf)
+library(knitr)
+library(tidyverse)
+```
+
+
+```{r cleaning_stuff}
+# Bring in tennis data thus far
+mcp_stats_lines <- read.csv("/mnt/nfs/clasnetappvm/homedirs/bradyanderson/CreativeComponent/mcp_stats_lines.csv")
+
+# Hard court surface is my default for the dummy of surface, which is the most common
+
+# Fix a few syntax things
+colnames(mcp_stats_lines)[11] <- "Serve1.Pct"
+colnames(mcp_stats_lines)[26] <- "Surface.Clay"
+colnames(mcp_stats_lines)[27] <- "Surface.Grass"
+
+# Remove NA -> Tommy Haas match 585
+mcp_stats_lines <- mcp_stats_lines[-585,]
+```
+
+
+# Introduction
+
+Ever-increasing amounts of data have provided the opportunity to model a plethora of phenomena in practical and meaningful ways, offering new insights into fields of all domains. Utilizing past data to build predictive models is one of the most sought-after applications in statistical learning, particularly in the field of sports analytics. Accurately creating, measuring, and analyzing key metrics that are crucial in the final results can provide competitive advantages to teams and players alike who extract insights about what attributes are most impactful to improving (and determining) future game performances.
+
+While not the forerunner, tennis has adopted widespread use of predictive analytics at all levels of the game. From increased match performance analytics provided in real-time by IBM during matches to the relatively new Universal Tennis Rating player ranking system, tennis continues to innovate in using data to drive both player improvement and sustained growth of the game.
+
+As with all sports, research into collecting better data and uncovering what key variables drive outcomes continues to be explored. This creative component project looks to build predictive models focused on what factors drive winning in professional men’s tennis through the usage and creation of more modern tennis metrics.
+
+## Goals
+
+Through application of several statistical learning methods, there are four primary goals of this research:
+
+1. Detect which variables are most influential in driving wins, and the strength of each relationship
+
+2. Determine how accurate each of the models are in predicting wins in professional men’s tennis
+
+3. Measure which model performs best in predicting professional men’s tennis outcomes
+
+4. Ultimately, acquire a greater understanding of the theory behind several foundational predictive statistical learning algorithms while simultaneously building a skillset in execution and analysis of their results using R.
+
+# Dataset
+
+There are two main data sources that were used in this project. The primary data source in which most of the explanatory variables were extracted/created is taken from a repository developed by Jeff Sackmann - the [Match Charting Project](http://www.tennisabstract.com/charting/meta.html). It consists of user-submitted point-by-point data for professional tennis matches with several other additional variables. Because of the self-selection nature of the dataset leading to mostly 'important' matches with available statistics (those in the later rounds and between the best players), the dataset is not a representative nor a random sample of the population of all men’s professional tennis matches. Due to the time-consuming process in charting these detailed statistics for a match by hand, not all matches for every player are documented and thus available for detailed statistics. This limitation does reduce the scope of inference of the study, and will be further discussed later in the analysis. 
+
+The second source consists of match results, further summary statistics, and betting lines, gathered from \url{http://www.tennis-data.co.uk/alldata.php}. Several variables were used in training and testing models from this source, in which the comparison of model performances is done using betting lines. Due to its greater availability, betting odds taken from Bet365 were used.\footnote{\url{https://www.bet365.com/}}
+
+## Variables
+
+Several match characteristics were created and analyzed to determine which most heavily influence outcomes, as detailed in Table 1 below. In line with standard sport prediction practice, the *differences* between statistics were used for all numeric variables, as exhibited in Sipko and Knottenbelt (2015) as well as Lopez and Mattews (2015).
+
+
+```{r features}
+# install.packages("kableExtra", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+# library("kableExtra", lib.loc="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+
+var_table <- data.frame(Variable = c("Ace.DF.ratio","BP.Save.Pct","Net.Wpct","Overall.Wpct","Rank.Pts.Diff","Serve1.Pct","Serve1.Wpct","Serve2.Wpct","Serve.Plus1.Pct", "Surface.Clay","Surface.Grass","Win.Err.Ratio","Zero.to.Four.Wpct"), 
+Description = c("Ratio of Aces to Double Faults","Break Points Saved (%)","Points Won at Net (%)", "Points Won (%)", "ATP Ranking Points", "1st Serves In (%)","1st Serve Points Won (%)", "2nd Serve Points Won (%)","Serves Followed by a Forehand Points Won (%)", "Match Played on Clay Court","Match Played on Grass Court", "Ratio of Winners to Errors","Points Won between 0-4 Shots (%)"), 
+Type = c("Numeric","Numeric","Numeric","Numeric","Integer","Numeric","Numeric","Numeric","Numeric","Indicator 0-1","Indicator 0-1","Numeric","Numeric"))
+
+# Make LaTeX Table - modify appropriately below!
+# kable(var_table,format="latex",booktabs = TRUE) 
+```
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+Variable & Description & Type\\
+\midrule
+\textbf{Ace.DF.ratio} & Ratio of Aces to Double Faults & Numeric\\
+\textbf{BP.Save.Pct} & Break Points Saved (\%) & Numeric\\
+\textbf{Net.Wpct} & Points Won at Net (\%) & Numeric\\
+\textbf{Overall.Wpct} & Points Won (\%) & Numeric\\
+\textbf{Rank.Pts.Diff} & ATP Ranking Points & Integer\\
+\textbf{Serve1.Pct} & 1st Serves In (\%) & Numeric\\
+\textbf{Serve1.Wpct} & 1st Serve Points Won (\%) & Numeric\\
+\textbf{Serve2.Wpct} & 2nd Serve Points Won (\%) & Numeric\\
+\textbf{Serve.Plus1.Pct} & Serves Followed by a Forehand Points Won (\%) & Numeric\\
+\textbf{Surface.Clay} & Match Played on Clay Court & Indicator 0-1\\
+\textbf{Surface.Grass} & Match Played on Grass Court & Indicator 0-1\\
+\textbf{Win.Err.Ratio} & Ratio of Winners to Errors & Numeric\\
+\textbf{Zero.to.Four.Wpct} & Points Won between 0-4 Shots (\%) & Numeric\\
+\bottomrule
+\end{tabular}
+\caption{Summary of Variables}
+\end{table}
+
+Of the features in Table 1 above, several are commonly used statistics for tennis prediction. These include 1st and 2nd serve win percentages (`Serve1.Wpct`, `Serve2.Wpct`), 1st serve percentage (`Serve1.Pct`), overall points won percentage (`Overall.Wpct`), the Association of Tennis Professionals (ATP) rankings (`Rank.Pts.Diff`), and surface indicators (`Surface.Clay`,`Surface.Grass`). However, I have created several addtional variables that I believe may add explanatory power to modeling match outcomes. The first of these include two 'ratio' variables: `Ace.DF.ratio`, and `Win.Err.Ratio`.\footnote{In cases in which there were zero double faults or errors the ratio was set to the maximum value of that variable from a player in the dataset} Commentators and players alike often comment on the importance of these two factors, suggesting their potential importance in winning a tennis match. Additionally, I added both `BP.Save.Pct` and `Net.Wpct`, to determine if 'clutchness' in preventing breaks of serve as well as effectiveness at net are highly predictive of success.\footnote{In cases with zero break points faced or net points played the variable was set to be 100\%}
+
+Finally, the game of men's professional tennis has moved drastically in the direction of short points dominated by the forehand side. Nearly 70% of professional men’s tennis points are between zero and four shots, indicating how crucial the first few shots are to success at the top level.  Furthermore,  in the past 20 years,  the number one player in the world has won roughly 55% of his total points played during that season.\footnote{O'Shannessy, 2017} This slight margin results in the best player in the world winning 90% or more of their matches in any given season in the past 20 years. With so few points deciding the winner and the majority of these points being short (zero to four shots), I created the `Zero.to.Four.Wpct` and `Serve.Plus1.Pct` variables to try and capture the impact these may drive in today's game. 
+
+
+### Standardization 
+
+The histograms below illustrate the distribution of some of the variables used in predicting match performance. As shown, nearly all are centered at zero and have a symmetrical shape as we would expect due them being the differences between two players performances. Therefore all variables, with the exception of the surface dummy variables, were standardized by dividing by just dividing each value by the variable's respective standard deviations, i.e. $\pmb{X}_{standardized} = \frac{\pmb{X}}{s}$ where $\pmb{X}$ is a variable and $s$ is the sample standard deviation of that variable. This procedure was done because of its usefulness in determining the relative importance of each variable in models in which coefficient weights are available. 
+
+```{r plots_standardize, fig.height=5,fig.width=10}
+# Now lets standardize each
+scale_sd <- function(x){
+  scale(x, center = FALSE)
+}
+mcp_stats_lines[,c(7:16,28)] <- lapply(mcp_stats_lines[,c(7:16,28)], scale_sd)
+
+par(mfrow=c(2,2))
+hist(mcp_stats_lines$Ace.DF.ratio, main = "", xlab="Ace.DF.Ratio", col="blue")
+hist(mcp_stats_lines$Overall.Wpct, main = "", xlab="Overall.Wpct", col="blue")
+hist(mcp_stats_lines$Serve1.Pct, main = "", xlab="Serve1.Pct", col="blue")
+hist(mcp_stats_lines$Rank.Pts.Diff, main = "", xlab="Rank.Pts.Diff", col="blue")
+
+```
+
+
+## Division
+
+Because predictions are made using past data sequentially, the dataset was partitioned into three sets following a standard "Train-Validate-Test" procedure as follows:
+
+* **Training Set (2009-2015)** - 
+Used to build optimal training model for select methods. The training models use predictor variables that are based on using known results of each variable following each match and thus are the 'true' results to help determine which are most influential and predictive of match results. **565 matches**
+
+* **Validation Set (2016-2017)** - 
+Used for select models to tune hyperparameters that are not optimized via the training set data. For example, in Ridge and Lasso, we test a variety of $\lambda$ values to determine which yields the lowest test error rate on the validation set. Variables are now averaged from the training set data for each player prior to use in the validation set. **129 matches**
+
+* **Testing Set (2018-2019)** - 
+Once the optimal model has been determined, the training and the validation set data are combined to increase the model training dataset size, with appropriate hyperparameters as determined from the validation process. Test varaiables are again averages of the variables for each player over the past data in the training dataset. **158 matches**
+
+Overall, the data follow a 7-2-2 year split, which was done for continuity purposes as well as to ensure there were enough training data matches to have multiple measures for basing a player's performance to predict on the testing data. For training, validating, and testing individual player outcomes from these matches, only matches in which both players had **at least two** matches prior were used. 
+
+```{r split_data}
+# 7-2-2 year split
+library(lubridate)
+mcp_stats_lines$Year <- year(mcp_stats_lines$Date)
+
+original_matches <- table(mcp_stats_lines$Year)
+
+## Training
+tennis_train <- mcp_stats_lines[mcp_stats_lines$Year < 2016,]
+
+## Validation
+tennis_validate <- mcp_stats_lines[mcp_stats_lines$Year < 2018 & mcp_stats_lines$Year > 2015,]
+
+## Testing
+tennis_test <- mcp_stats_lines[mcp_stats_lines$Year > 2017,]
+
+
+# Update Datasets appropriately
+
+## Training
+
+# Update training dataset
+  # Add Last1 and Last2 together by name to determine counts in training dataset
+a <- table(tennis_train$Last1)
+b <- table(tennis_train$Last2)
+n <- intersect(names(a), names(b))
+names_total <- c(a[!names(a) %in% n], b[!names(b) %in% n], a[n] + b[n])
+
+# Remove players with less than 2 previous matches for validating
+names_final <- names_total[names_total > 1]
+players_used <- names(names_final)
+
+tennis_train$last1_player <- tennis_train$Last1 %in% players_used
+tennis_train$last2_player <- tennis_train$Last2 %in% players_used
+tennis_train_final <- tennis_train[tennis_train$last1_player == "TRUE" & tennis_train$last2_player == "TRUE",]
+
+tennis_train_final <- tennis_train_final[,-c(31,32)]
+
+## Validate
+
+# Get rid of matches with players who are not in training set
+tennis_validate$last1_player <- tennis_validate$Last1 %in% players_used
+tennis_validate$last2_player <- tennis_validate$Last2 %in% players_used
+tennis_validate_final <- tennis_validate[tennis_validate$last1_player == "TRUE" & tennis_validate$last2_player == "TRUE",]
+
+tennis_validate_final <- tennis_validate_final[,-c(31,32)]
+
+## Testing
+
+# Get rid of matches with players who are not in training set
+tennis_test$last1_player <- tennis_test$Last1 %in% players_used
+tennis_test$last2_player <- tennis_test$Last2 %in% players_used
+tennis_test_final <- tennis_test[tennis_test$last1_player == "TRUE" & tennis_test$last2_player == "TRUE",]
+
+tennis_test_final <- tennis_test_final[,-c(31,32)]
+
+## Together -> train and validate used to tune final model and averages used for predicting test set classifications 
+  # 695 for 'tuning' and 158 testing
+
+### 'Final' (hopefully) data counts:
+  # 565 training, 129 validating, 158 testing = 852 total matches used
+    # (115 truly in 'validation' as some in validation have multiple making them valid to be used in testing)
+```
+
+
+As discussed previously, all ATP matches were not available for the analysis, and the Match Charting Project dataset is a crowdsourced dataset that has been developed by several contributors. Therefore, the matches that are available tend to be from the higher ranked players and from the more important matches, notably from the four Grand Slam tournaments (Australian Open, French Open, Wimbledon, and the US Open) as well as in the later rounds of tournaments (Quarterfinals, Semifinals and Finals). 
+
+The diagram below highlights which players are most prominant in the final dataset used in the analysis.\footnote{For readability, the bar chart is ordered from high to low with the x-axis only showing the label for every other player} Of note is the exponential shape of this dsitribution, as the recent world's best and most beloved ATP players (Federer, Djokovic, Nadal) are massively over-represented compared to their lower-ranked counterparts. Since a majority of all the matches played by these elite players are charted, there is much more confidence in the predictions made for their matches. For lower-ranked players, there may be bias in the sense that they are more likely to be included in the dataset if they are competing against one of these top players. This may systematically underestimate their true performance in the key variables measured when averaging them using the past available data. This concern does reduce generalizability of the models predictions across all players, however there is more confidence in predictions for those players with more matches. This limitation will be further considered in the conclusion portion of this analysis when making final inferences of the robustness of competing models. 
+
+```{r dist_matches,fig.height=4}
+# 'Merge' all finals into one dataset
+tennis_final_all <- rbind(tennis_train_final,tennis_validate_final,tennis_test_final)
+a2 <- table(tennis_final_all$Last1)
+b2 <- table(tennis_final_all$Last2)
+n2 <- intersect(names(a2), names(b2))
+names_total2 <- c(a2[!names(a2) %in% n2], b2[!names(b2) %in% n2], a2[n2] + b2[n2])
+names_final_all <- names_total2[names_total2 > 0]
+names_final_all <- as.data.frame(names_final_all)
+colnames(names_final_all) <- "Matches"
+names_final_all$Player <- rownames(names_final_all)
+
+# Reorder highest to lowest matches played for plot
+plot_players <- with(names_final_all,order(Matches,decreasing = TRUE))
+names_final_all <- names_final_all[plot_players,]
+players_names <- names_final_all$Player
+
+library(ggplot2)
+ggplot(names_final_all,aes(x=Player,y=Matches))+
+  geom_bar(stat="identity",fill="blue")+
+  labs(title="Charted Match Distribution")+
+  xlab("Player")+
+  theme(title = element_text(face="bold",color="blue",size=16),axis.text.x = element_text(angle=90,size=8,color="blue",vjust=0.5))+
+  scale_x_discrete(limits=players_names,breaks=players_names[seq(1,length(players_names),by=2)])
+  
+```
+
+
+
+## Diagnostics
+
+Examining the correlation between our predictors, we found some evidence in the figure below of multicollinearity which may be problematic in our modeling procedures. This is particularly of note with the `Overall.Wpct` variable and several of the other variables for win percentage, such as `Serve1.Wpct` and `Serve2.Wpct` as we would expect. However, most of the correlations between predictors are well below 0.9 and multicollinearity in the variables appears to not be too drastically violated. Nevertheless, all models were optimized based on whichever combination of predictors and parameters minimize the test error rate, as discussed below. 
+
+```{r corplot,fig.height=4}
+# Correlation matrix of numeric predictors
+# install.packages("corrplot", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+library(corrplot)
+cor_matrix <- cor(mcp_stats_lines[,c(7:16,28)])
+corrplot(cor_matrix,method = "number",number.cex = 0.75)
+```
+
+
+## Model Optimization
+
+There were two main objectives of this tennis predictive modeling procedure:
+
+1. Minimize the incorrect number of classifications, or the **Test Error Rate**
+
+2. Maximize the Return on Investment, or the **ROI**
+
+Both are complex optimization procedures that do not necessarily align with one another depending on one's betting strategy and the model deployed. This study first sought to determine which model was most *accurate* in classifying match outcomes using a training, validation, and testing split as discussed previously. Subsequently, determining which of the 'best' models of each method then provided the greatest *ROI* using a few select strategies was tested to determine which was most profitable.
+
+
+# Methods
+
+Following is a run-through of the models developed, generally beginning with those that are more parametric and ending with those that are less parametric. For all methods, a cutoff of $q = 0.5$ is used, where model predictions in which $p(\pmb{X}) > 0.5$ are classified as a 1 or 'Win' for the player and a 0 or 'Loss' otherwise. This is very much in line with standard procedure and our testing dataset, as there are 76 cases out of the 158 that are classified as 1's or 'Wins' ( $\approx$ 48.1%)
+
+## Logistic Regression
+
+Logistic regression is a *generalized* linear model that seeks to assign a set of covariates ($\pmb{X}$) to one of several disjoint classes. Let $Y = 0$ represent a 'Loss' and $Y=1$ represent a 'Win' for a given player. Furthermore, let $p(\pmb{X}) = P(Y = 1|\pmb{X})$ be the probability that a player wins given **X**, the set of covariates described in the Dataset discussion. To ensure that our model's range of predictions for $Y$ stay within 0 and 1, we let $p(\pmb{X}) = \frac{e^{\pmb{\beta X}}}{1+e^{\pmb{\beta X}}}$, where $\pmb{\beta} = (\beta_0,\beta_1...)^T$ is the vector set of coefficient parameters for each covariate. After manipulation, one yields the logit link function used for the regression as:
+
+$$log\bigg(\frac{p(\pmb{X})}{1-p(\pmb{X})}\bigg) = \pmb{X\beta }$$
+The above regression model is now linear in $\pmb{X}$, whose $\pmb{\beta}$ parameters are estimated using maximum likelihood, also found by minimizing the negative log likelihood, which is formulated as:
+
+$$ L = -log\bigg(\prod_{i: Y_i = 1}p(X_i) \prod_{j: Y_j = 0}(1-p(X_j))\bigg) $$
+
+where $p(X_i)$ will be closer to 1 for the set of $i: Y_i = 1$ and $p(X_j)$ closer to 0 for the set of $j: Y_j = 0$ if the model fits well.
+
+Because logistic regression is a generalized linear model, it does not have quite as many assumptions as a typical linear model, specifically in that it does not require variables to be linearly related to the response nor does it require homoscedasticity and normality of the error terms. However, logistic regression does assume no high multicollinearity between the predictors, a linear relationship between the predictor variables and the logit response, and that observations are independent. The first of these assumptions is certainly violated as shown in our correlation matrix previously. The latter two are less clearly violated, and for the purposes of this analysis, will not be further explored in depth. 
+
+### Full Model
+
+```{r full_log_model}
+
+# Convert all variables to numeric
+tennis_train_final$Ace.DF.ratio <- as.numeric(tennis_train_final$Ace.DF.ratio)
+tennis_train_final$BP.Save.Pct <- as.numeric(tennis_train_final$BP.Save.Pct)
+tennis_train_final$Net.Wpct <- as.numeric(tennis_train_final$Net.Wpct)
+tennis_train_final$Overall.Wpct <- as.numeric(tennis_train_final$Overall.Wpct)
+tennis_train_final$Serve1.Pct <- as.numeric(tennis_train_final$Serve1.Pct)
+tennis_train_final$Serve1.Wpct <- as.numeric(tennis_train_final$Serve1.Wpct)
+tennis_train_final$Serve2.Wpct <- as.numeric(tennis_train_final$Serve2.Wpct)
+tennis_train_final$Serve.Plus1.Pct <- as.numeric(tennis_train_final$Serve.Plus1.Pct)
+tennis_train_final$Win.Err.Ratio <- as.numeric(tennis_train_final$Win.Err.Ratio)
+tennis_train_final$Zero.to.Four.Wpct <- as.numeric(tennis_train_final$Zero.to.Four.Wpct)
+tennis_train_final$Rank.Pts.Diff <- as.numeric(tennis_train_final$Rank.Pts.Diff)
+
+# Remove variables unused in training model 
+tennis_train_vars <- tennis_train_final[,c(7:16,26:29)]
+
+
+# Fit model
+log.train <- glm(y ~ .,data=tennis_train_vars, family = binomial)
+
+# Now - need to figure out how to carry forward averages of each stat -> use this for future matches on validation set
+  # NOTE - surface dummies and Rank Diff variables KNOWN A PRIOR -> do not need to average to use in covariate matrix!
+
+# Separate name groups into first player and second (will need to 'merge' averages later)
+tennis_train_vars_names1 <- tennis_train_final[,c(3:4,7:16)]
+tennis_train_vars_names2 <- tennis_train_final[,c(5:6,7:16)]
+
+# Convert all variables into vectors -> so in the same dim for dply group_by/summarize
+tennis_train_vars_names1$Ace.DF.ratio <- c(tennis_train_vars_names1$Ace.DF.ratio)
+tennis_train_vars_names1$BP.Save.Pct <- c(tennis_train_vars_names1$BP.Save.Pct)
+tennis_train_vars_names1$Net.Wpct <- c(tennis_train_vars_names1$Net.Wpct)
+tennis_train_vars_names1$Overall.Wpct <- c(tennis_train_vars_names1$Overall.Wpct)
+tennis_train_vars_names1$Serve1.Pct <- c(tennis_train_vars_names1$Serve1.Pct)
+tennis_train_vars_names1$Serve1.Wpct <- c(tennis_train_vars_names1$Serve1.Wpct)
+tennis_train_vars_names1$Serve2.Wpct <- c(tennis_train_vars_names1$Serve2.Wpct)
+tennis_train_vars_names1$Win.Err.Ratio <- c(tennis_train_vars_names1$Win.Err.Ratio)
+tennis_train_vars_names1$Serve.Plus1.Pct <- c(tennis_train_vars_names1$Serve.Plus1.Pct)
+tennis_train_vars_names1$Zero.to.Four.Wpct <- c(tennis_train_vars_names1$Zero.to.Four.Wpct)
+
+tennis_train_vars_names2$Ace.DF.ratio <- c(tennis_train_vars_names2$Ace.DF.ratio)
+tennis_train_vars_names2$BP.Save.Pct <- c(tennis_train_vars_names2$BP.Save.Pct)
+tennis_train_vars_names2$Net.Wpct <- c(tennis_train_vars_names2$Net.Wpct)
+tennis_train_vars_names2$Overall.Wpct <- c(tennis_train_vars_names2$Overall.Wpct)
+tennis_train_vars_names2$Serve1.Pct <- c(tennis_train_vars_names2$Serve1.Pct)
+tennis_train_vars_names2$Serve1.Wpct <- c(tennis_train_vars_names2$Serve1.Wpct)
+tennis_train_vars_names2$Serve2.Wpct <- c(tennis_train_vars_names2$Serve2.Wpct)
+tennis_train_vars_names2$Win.Err.Ratio <- c(tennis_train_vars_names2$Win.Err.Ratio)
+tennis_train_vars_names2$Serve.Plus1.Pct <- c(tennis_train_vars_names2$Serve.Plus1.Pct)
+tennis_train_vars_names2$Zero.to.Four.Wpct <- c(tennis_train_vars_names2$Zero.to.Four.Wpct)
+
+
+# Get average stats by players (player 1 and 2 below)
+
+match_avg1 <- tennis_train_vars_names1 %>%
+                group_by(First1,Last1) %>%
+                  summarize(mean.Ace.DF.Ratio = mean(Ace.DF.ratio),
+                      mean.BP.Save.Pct = mean(BP.Save.Pct),
+                      mean.Net.Wpct = mean(Net.Wpct),
+                      mean.Overall.Wpct = mean(Overall.Wpct),
+                      mean.Serve1.Pct = mean(Serve1.Pct),
+                      mean.Serve1.Wpct = mean(Serve1.Wpct),
+                      mean.Serve2.Wpct = mean(Serve2.Wpct),
+                      mean.Win.Err.Ratio = mean(Win.Err.Ratio),
+                      mean.Serve.Plus1.Pct = mean(Serve.Plus1.Pct),
+                      mean.Zero.to.Four.Wpct = mean(Zero.to.Four.Wpct),
+                      n()
+                      )
+
+match_avg2 <- tennis_train_vars_names2 %>%
+                group_by(First2,Last2) %>%
+                  summarize(mean.Ace.DF.Ratio = mean(Ace.DF.ratio),
+                      mean.BP.Save.Pct = mean(BP.Save.Pct),
+                      mean.Net.Wpct = mean(Net.Wpct),
+                      mean.Overall.Wpct = mean(Overall.Wpct),
+                      mean.Serve1.Pct = mean(Serve1.Pct),
+                      mean.Serve1.Wpct = mean(Serve1.Wpct),
+                      mean.Serve2.Wpct = mean(Serve2.Wpct),
+                      mean.Win.Err.Ratio = mean(Win.Err.Ratio),
+                      mean.Serve.Plus1.Pct = mean(Serve.Plus1.Pct),
+                      mean.Zero.to.Four.Wpct = mean(Zero.to.Four.Wpct),
+                      n()
+                      )
+
+## Now, use weighted average to get "Past average stats"
+
+# First, add rows to match_avg2 with missing players
+# Make character vectors of names
+match_avg1$First1 <- as.character(match_avg1$First1)
+match_avg1$Last1 <- as.character(match_avg1$Last1)
+
+match_avg2$First2 <- as.character(match_avg2$First2)
+match_avg2$Last2 <- as.character(match_avg2$Last2)
+
+# Rename cols in match_avg2 to match match_avg1
+match_avg2$First1 <- match_avg2$First2
+match_avg2$Last1 <- match_avg2$Last2
+match_avg2 <- match_avg2[,-c(1:2)]
+match_avg2 <- match_avg2[,c(12:13,1:11)]
+
+# setdiff to see different rows from the two data frames 
+common_names <- inner_join(match_avg1,match_avg2, by = c("First1", "Last1"))
+diff_names1 <- anti_join(match_avg1,match_avg2, by = c("First1", "Last1"))
+diff_names2 <- anti_join(match_avg2,match_avg1, by = c("First1", "Last1"))
+
+
+# Get weighted average of each statistic for each player
+common_names$n_total <- common_names$`n().x`+common_names$`n().y`
+common_names$weight.x <- common_names$`n().x`/common_names$n_total
+common_names$weight.y <- common_names$`n().y`/common_names$n_total
+
+
+# Apply weighted average function to each set of rows
+weight_fun.x <- function(x){
+  x*common_names$weight.x
+}
+
+weight_fun.y <- function(y){
+  y*common_names$weight.y
+}
+
+# Change each `x and y piece` averages according to weights
+updated_common_names <- data.frame(common_names[1:2], lapply(common_names[3:12], weight_fun.x), lapply(common_names[14:23], weight_fun.y) )
+
+# Add together weighted pieces for final average
+updated_common_names2 <- updated_common_names %>%
+                            transmute(mean.Ace.DF.Ratio = mean.Ace.DF.Ratio.x + mean.Ace.DF.Ratio.y,
+                            mean.BP.Save.Pct = mean.BP.Save.Pct.x + mean.BP.Save.Pct.y,
+                            mean.Net.Wpct = mean.Net.Wpct.x + mean.Net.Wpct.y,
+                            mean.Overall.Wpct = mean.Overall.Wpct.x + mean.Overall.Wpct.y,
+                            mean.Serve1.Pct = mean.Serve1.Pct.x + mean.Serve1.Pct.y,
+                            mean.Serve1.Wpct = mean.Serve1.Wpct.x + mean.Serve1.Wpct.y,
+                            mean.Serve2.Wpct = mean.Serve2.Wpct.x + mean.Serve2.Wpct.y,
+                            mean.Win.Err.Ratio = mean.Win.Err.Ratio.x + mean.Win.Err.Ratio.y,
+                            mean.Serve.Plus1.Pct = mean.Serve.Plus1.Pct.x + mean.Serve.Plus1.Pct.y,
+                            mean.Zero.to.Four.Wpct = mean.Zero.to.Four.Wpct.x + mean.Zero.to.Four.Wpct.y 
+                            )
+  
+# Add back in names
+common_names_final <- cbind(updated_common_names[1:2],updated_common_names2)
+# Rbind them together
+diff_names1 <- diff_names2[-13]
+diff_names2 <- diff_names2[-13]
+all_players <- rbind.data.frame(common_names_final,diff_names1,diff_names2)
+# More informative name of ^
+train_avg_stats <- all_players
+
+######### Validation of Full Logistic ############
+validate_names <- tennis_validate_final[,c(3:6,26:29)]
+validate_names$Rank.Pts.Diff <- c(validate_names$Rank.Pts.Diff)
+
+# Join averages for first1 and last1 first
+validate_stats <- left_join(validate_names,train_avg_stats,by=c("First1","Last1"))
+# Now join averages for first2 and last2
+validate_stats <- left_join(validate_stats,train_avg_stats, by=c("First2" = "First1", "Last2" = "Last1"))
+
+# Remove rows used in testing but not enough data in training to validate
+validate_stats <- validate_stats[-c(14,19,46,52,73,74,95,97,100,111,121,127,129,131),]
+
+## Delete duplicates? Odd
+validate_stats <- validate_stats[-c(4,7,18,29,47,52:54,62,71,93,100,123),]
+validate_stats <- validate_stats[-52,]
+
+# Check for duplicates
+# duplicated(validate_stats) # all good - last true is dimitrov playing goffin twice in a week -> round robin and final of ATP WTF
+# duplicated(tennis_train_final)  # all good
+# duplicated(tennis_test_final) # all good
+
+##### Differences of each of 10 statistics #####
+
+validate_stats_final <- validate_stats %>%
+                            transmute(mean.Ace.DF.Ratio = mean.Ace.DF.Ratio.x - mean.Ace.DF.Ratio.y,
+                            mean.BP.Save.Pct = mean.BP.Save.Pct.x - mean.BP.Save.Pct.y,
+                            mean.Net.Wpct = mean.Net.Wpct.x - mean.Net.Wpct.y,
+                            mean.Overall.Wpct = mean.Overall.Wpct.x - mean.Overall.Wpct.y,
+                            mean.Serve1.Pct = mean.Serve1.Pct.x - mean.Serve1.Pct.y,
+                            mean.Serve1.Wpct = mean.Serve1.Wpct.x - mean.Serve1.Wpct.y,
+                            mean.Serve2.Wpct = mean.Serve2.Wpct.x - mean.Serve2.Wpct.y,
+                            mean.Win.Err.Ratio = mean.Win.Err.Ratio.x - mean.Win.Err.Ratio.y,
+                            mean.Serve.Plus1.Pct = mean.Serve.Plus1.Pct.x - mean.Serve.Plus1.Pct.y,
+                            mean.Zero.to.Four.Wpct = mean.Zero.to.Four.Wpct.x - mean.Zero.to.Four.Wpct.y 
+                            )
+validate_stats_final <- cbind.data.frame(validate_stats[1:8],validate_stats_final)
+
+# Rename variables to match training dataset
+colnames(validate_stats_final)[9:18] <- colnames(tennis_train_vars)[1:10]
+
+###### Predict win/loss on validated stats ######
+log.validate.probs <- predict(log.train,validate_stats_final[c(9:18,5:7)],type="response")
+
+true.y.validate <- validate_stats_final$y
+log.validate.pred <- rep(0,115)
+
+# If model prob > 0.5 then "Win"
+log.validate.pred[log.validate.probs > 0.5] = 1
+
+# table(log.validate.pred,true.y.validate)
+# mean(log.validate.pred != true.y.validate) # 42.6%, not too bad given should be 50-50 in long run if lines "equal" (maybe not here given only 115 matches)
+
+### ^ USE ABOVE to compare with validation from Lasso/Ridge and compression (PCR) selected through trying different lambda/PC's on validation set. Then compare ALL WITH TEST DATA USING ALL OF VALIDATION
+
+####### Testing Logistic Full #######
+
+# Now we need to use BOTH the VALIDATION AND THE TRAINING datasets as the 'new' training data in building the model for the testing dataset (remove dimitrov double row)
+
+full_train_validate <- rbind.data.frame(tennis_train_final,tennis_validate_final[-130,])
+
+# Convert all variables to numeric
+full_train_validate$Ace.DF.ratio <- as.numeric(full_train_validate$Ace.DF.ratio)
+full_train_validate$BP.Save.Pct <- as.numeric(full_train_validate$BP.Save.Pct)
+full_train_validate$Net.Wpct <- as.numeric(full_train_validate$Net.Wpct)
+full_train_validate$Overall.Wpct <- as.numeric(full_train_validate$Overall.Wpct)
+full_train_validate$Serve1.Pct <- as.numeric(full_train_validate$Serve1.Pct)
+full_train_validate$Serve1.Wpct <- as.numeric(full_train_validate$Serve1.Wpct)
+full_train_validate$Serve2.Wpct <- as.numeric(full_train_validate$Serve2.Wpct)
+full_train_validate$Serve.Plus1.Pct <- as.numeric(full_train_validate$Serve.Plus1.Pct)
+full_train_validate$Win.Err.Ratio <- as.numeric(full_train_validate$Win.Err.Ratio)
+full_train_validate$Zero.to.Four.Wpct <- as.numeric(full_train_validate$Zero.to.Four.Wpct)
+full_train_validate$Rank.Pts.Diff <- as.numeric(full_train_validate$Rank.Pts.Diff)
+
+# Remove variables unused in training model 
+full_train_vars <- full_train_validate[,c(7:16,26:29)]
+
+# Fit model
+log.full.train <- glm(y ~ .,data=full_train_vars, family = binomial)
+# summary(log.full.train)
+
+# Separate name groups into first player and second (will need to 'merge' averages later)
+full_train_vars_names1 <- full_train_validate[,c(3:4,7:16)]
+full_train_vars_names2 <- full_train_validate[,c(5:6,7:16)]
+
+# Get average stats by players (player 1 and 2 below)
+
+match_avg1_full <- full_train_vars_names1 %>%
+                group_by(First1,Last1) %>%
+                  summarize(mean.Ace.DF.Ratio = mean(Ace.DF.ratio),
+                      mean.BP.Save.Pct = mean(BP.Save.Pct),
+                      mean.Net.Wpct = mean(Net.Wpct),
+                      mean.Overall.Wpct = mean(Overall.Wpct),
+                      mean.Serve1.Pct = mean(Serve1.Pct),
+                      mean.Serve1.Wpct = mean(Serve1.Wpct),
+                      mean.Serve2.Wpct = mean(Serve2.Wpct),
+                      mean.Win.Err.Ratio = mean(Win.Err.Ratio),
+                      mean.Serve.Plus1.Pct = mean(Serve.Plus1.Pct),
+                      mean.Zero.to.Four.Wpct = mean(Zero.to.Four.Wpct),
+                      n()
+                      )
+
+match_avg2_full <- full_train_vars_names2 %>%
+                group_by(First2,Last2) %>%
+                  summarize(mean.Ace.DF.Ratio = mean(Ace.DF.ratio),
+                      mean.BP.Save.Pct = mean(BP.Save.Pct),
+                      mean.Net.Wpct = mean(Net.Wpct),
+                      mean.Overall.Wpct = mean(Overall.Wpct),
+                      mean.Serve1.Pct = mean(Serve1.Pct),
+                      mean.Serve1.Wpct = mean(Serve1.Wpct),
+                      mean.Serve2.Wpct = mean(Serve2.Wpct),
+                      mean.Win.Err.Ratio = mean(Win.Err.Ratio),
+                      mean.Serve.Plus1.Pct = mean(Serve.Plus1.Pct),
+                      mean.Zero.to.Four.Wpct = mean(Zero.to.Four.Wpct),
+                      n()
+                      )
+
+## Now, use weighted average to get "Past average stats"
+
+# Make character vectors of names
+match_avg1_full$First1 <- as.character(match_avg1_full$First1)
+match_avg1_full$Last1 <- as.character(match_avg1_full$Last1)
+
+match_avg2_full$First2 <- as.character(match_avg2_full$First2)
+match_avg2_full$Last2 <- as.character(match_avg2_full$Last2)
+
+# Rename cols in match_avg2 to match match_avg1
+match_avg2_full$First1 <- match_avg2_full$First2
+match_avg2_full$Last1 <- match_avg2_full$Last2
+match_avg2_full <- match_avg2_full[,-c(1:2)]
+match_avg2_full <- match_avg2_full[,c(12:13,1:11)]
+
+# Joins to see different rows from the two data frames 
+common_names_full <- inner_join(match_avg1_full,match_avg2_full, by = c("First1", "Last1"))
+diff_names_full1 <- anti_join(match_avg1_full,match_avg2_full, by = c("First1", "Last1"))
+diff_names_full2 <- anti_join(match_avg2_full,match_avg1_full, by = c("First1", "Last1"))
+
+# Get weighted average of each statistic for each player
+common_names_full$n_total <- common_names_full$`n().x`+common_names_full$`n().y`
+common_names_full$weight.x <- common_names_full$`n().x`/common_names_full$n_total
+common_names_full$weight.y <- common_names_full$`n().y`/common_names_full$n_total
+
+
+# Apply weighted average function to each set of rows
+weight_fun.x.full <- function(x){
+  x*common_names_full$weight.x
+}
+
+weight_fun.y.full <- function(y){
+  y*common_names_full$weight.y
+}
+
+# Change each `x and y piece` averages according to weights
+updated_common_names_full <- data.frame(common_names_full[1:2], lapply(common_names_full[3:12], weight_fun.x.full), lapply(common_names_full[14:23], weight_fun.y.full) )
+
+# Add together weighted pieces for final average
+updated_common_names_full2 <- updated_common_names_full %>%
+                            transmute(mean.Ace.DF.Ratio = mean.Ace.DF.Ratio.x + mean.Ace.DF.Ratio.y,
+                            mean.BP.Save.Pct = mean.BP.Save.Pct.x + mean.BP.Save.Pct.y,
+                            mean.Net.Wpct = mean.Net.Wpct.x + mean.Net.Wpct.y,
+                            mean.Overall.Wpct = mean.Overall.Wpct.x + mean.Overall.Wpct.y,
+                            mean.Serve1.Pct = mean.Serve1.Pct.x + mean.Serve1.Pct.y,
+                            mean.Serve1.Wpct = mean.Serve1.Wpct.x + mean.Serve1.Wpct.y,
+                            mean.Serve2.Wpct = mean.Serve2.Wpct.x + mean.Serve2.Wpct.y,
+                            mean.Win.Err.Ratio = mean.Win.Err.Ratio.x + mean.Win.Err.Ratio.y,
+                            mean.Serve.Plus1.Pct = mean.Serve.Plus1.Pct.x + mean.Serve.Plus1.Pct.y,
+                            mean.Zero.to.Four.Wpct = mean.Zero.to.Four.Wpct.x + mean.Zero.to.Four.Wpct.y 
+                            )
+  
+# Add back in names
+common_names_full_final <- cbind(updated_common_names_full[1:2],updated_common_names_full2)
+# Rbind them together
+diff_names_full1 <- diff_names_full1[-13]
+diff_names_full2 <- diff_names_full2[-13]
+all_players_full <- rbind.data.frame(common_names_full_final,diff_names_full1,diff_names_full2)
+# More informative name of ^
+full_train_avg_stats <- all_players_full
+
+######### Testing of Full Logistic using Train/Validate data ############
+
+# Make test all numeric 
+
+tennis_test_final$Ace.DF.ratio <- as.numeric(tennis_test_final$Ace.DF.ratio)
+tennis_test_final$BP.Save.Pct <- as.numeric(tennis_test_final$BP.Save.Pct)
+tennis_test_final$Net.Wpct <- as.numeric(tennis_test_final$Net.Wpct)
+tennis_test_final$Overall.Wpct <- as.numeric(tennis_test_final$Overall.Wpct)
+tennis_test_final$Serve1.Pct <- as.numeric(tennis_test_final$Serve1.Pct)
+tennis_test_final$Serve1.Wpct <- as.numeric(tennis_test_final$Serve1.Wpct)
+tennis_test_final$Serve2.Wpct <- as.numeric(tennis_test_final$Serve2.Wpct)
+tennis_test_final$Serve.Plus1.Pct <- as.numeric(tennis_test_final$Serve.Plus1.Pct)
+tennis_test_final$Win.Err.Ratio <- as.numeric(tennis_test_final$Win.Err.Ratio)
+tennis_test_final$Zero.to.Four.Wpct <- as.numeric(tennis_test_final$Zero.to.Four.Wpct)
+tennis_test_final$Rank.Pts.Diff <- as.numeric(tennis_test_final$Rank.Pts.Diff)
+
+# Get non-averaged vars
+test_names <- tennis_test_final[,c(3:6,26:29)]
+
+# Join averages for first1 and last1 first
+test_stats <- left_join(test_names,full_train_avg_stats,by=c("First1","Last1"))
+# Now join averages for first2 and last2
+test_stats <- left_join(test_stats,full_train_avg_stats, by=c("First2" = "First1", "Last2" = "Last1"))
+
+# Check for duplicates
+# duplicated(test_stats) # All good - murray one is not a duplicate
+
+##### Differences of each of 10 statistics #####
+
+test_stats_final <- test_stats %>%
+                            transmute(mean.Ace.DF.Ratio = mean.Ace.DF.Ratio.x - mean.Ace.DF.Ratio.y,
+                            mean.BP.Save.Pct = mean.BP.Save.Pct.x - mean.BP.Save.Pct.y,
+                            mean.Net.Wpct = mean.Net.Wpct.x - mean.Net.Wpct.y,
+                            mean.Overall.Wpct = mean.Overall.Wpct.x - mean.Overall.Wpct.y,
+                            mean.Serve1.Pct = mean.Serve1.Pct.x - mean.Serve1.Pct.y,
+                            mean.Serve1.Wpct = mean.Serve1.Wpct.x - mean.Serve1.Wpct.y,
+                            mean.Serve2.Wpct = mean.Serve2.Wpct.x - mean.Serve2.Wpct.y,
+                            mean.Win.Err.Ratio = mean.Win.Err.Ratio.x - mean.Win.Err.Ratio.y,
+                            mean.Serve.Plus1.Pct = mean.Serve.Plus1.Pct.x - mean.Serve.Plus1.Pct.y,
+                            mean.Zero.to.Four.Wpct = mean.Zero.to.Four.Wpct.x - mean.Zero.to.Four.Wpct.y 
+                            )
+test_stats_final <- cbind.data.frame(test_stats[1:8],test_stats_final)
+
+# Rename variables to match training dataset
+colnames(test_stats_final)[9:18] <- colnames(tennis_train_vars)[1:10]
+
+###### Predict win/loss on validated stats ######
+log.test.probs <- predict(log.full.train,test_stats_final[c(9:18,5:7)],type="response")
+
+true.y.test <- test_stats_final$y
+log.test.pred <- rep(0,158)
+
+# If model prob > 0.5 then "Win"
+log.test.pred[log.test.probs > 0.5] = 1
+
+###### Full logistic - test error rate ##### 
+# table(log.test.pred,true.y.test)
+# mean(log.test.pred != true.y.test) # 71/158 44.9%, a little worse on testing set than validating (158 matches)
+
+```
+
+Running a logistic regression model containing all of the variables resulted in three statistically significant variables at the $\alpha = 0.1$ level, and just one at the $\alpha = 0.05$ level. The most impactful variable in determining win percentage was the `Overall.Wpct` variable unsurprisingly, with an extremely small p-value of $< 0.001$. `Serve1.Wpct` and `Rank.Pts.Diff` were the other two that were statistically significant at the 0.1 level. However, as mentioned previously, many of these variables are correlated and the assumptions of logistic regression are not completely met, discrediting their validity. 
+
+The model correctly classifies 87 of the 158 matches in the testing dataset. 
+
+### Regularization and Dimension Reduction: Ridge, Lasso, and Principal Components Regression (PCR)
+
+### Ridge Regression
+
+Ridge regression is a *shrinkage method* that we perform with all of our predictor variables as detailed earlier. Ridge regression seeks to solve the Lagrange optimization problem as follows:
+
+$$\beta^R_{\lambda} = \operatorname*{argmin}_{\beta \in \mathbb{R}^p} L+\lambda\sum_{j=1}^p\beta_j^2$$
+
+where $\lambda$ is the shrinkage penalizing term for our $\beta$ estimators obtained via the logistic regression, and $\hat{y}$ is our predicted class for a given set of $p$ variables in $\pmb{X}$. Thus, the Ridge optimization problem above trades off bias and variance in the typical machine learning lingo, as we seek to select a model with predictor variables that fits the outcome well (has low bias) but does not dramatically change when seeing new data with large parameter estimates (high variance). Fitting a model through intentional introudction of some bias but a larger reduction in variance can often yield more accurate predictions, and a lower Test Error Rate.
+
+```{r ridge_log}
+###### Validation - find Ridge optimal lambda ######
+
+# Get matrix of predictors training set
+x_preds_training <- tennis_train_vars[,-14]
+x_preds_training <- as.matrix(x_preds_training)
+y_training <- tennis_train_vars[,14]
+y_training <- as.matrix(y_training)
+# Get matrix of predictors from validation set
+x_preds_validate <- validate_stats_final[,c(5:7,9:18)]
+x_preds_validate <- as.matrix(x_preds_validate)
+y_validate <- validate_stats_final[,8]
+y_validate <- as.matrix(y_validate)
+
+# Search range of lambdas
+grid=10^seq(10,-2, length =1000)
+
+ridge.model <- glmnet(x_preds_training, y_training, family = "binomial", alpha = 0, lambda = grid)
+
+# Try different lambdas on validation set and choose lambda that "minimizes" test error
+probabilities <- ridge.model %>% predict(newx = x_preds_validate, type = "response")
+predicted.classes <- ifelse(probabilities > 0.5, 1, 0)
+# Model accuracy - error rates
+error_rate_ridge <- matrix(NA)
+for(i in 1:1000){
+  error_rate_ridge[i] = mean(predicted.classes[,i] != y_validate)
+}
+# error_rate_ridge
+# min(error_rate_ridge) # 756 to 843 lambdas about the same which correspond to range of 8.53 to 0.5ish -> try this range on test data 
+
+range.ridge <- c(grid[756:843],0.7,0.6,0.5,0.4,0.3,0.2,0.1,0)
+
+
+##### Lambda Error Rate - Ridge Testing Data #####
+
+# Get matrix of predictors full training set
+full_x_preds_train <- full_train_vars[,-14]
+full_x_preds_train <- as.matrix(full_x_preds_train)
+full_y_train <- full_train_vars[,14]
+full_y_train <- as.matrix(full_y_train)
+
+# Get matrix of predictors from testing set
+x_test <- test_stats_final[,c(5:7,9:18)]
+x_test <- as.matrix(x_test)
+y_test <- test_stats_final[,8]
+y_test <- as.matrix(y_test)
+
+# Model
+ridge.model.test <- glmnet(full_x_preds_train, full_y_train, family = "binomial", alpha = 0)
+
+probabilities.test <- ridge.model.test %>% predict(newx = x_test,type = "response", s = range.ridge)
+predicted.classes.test <- ifelse(probabilities.test > 0.5, 1, 0)
+
+# Error Rate
+error_rate_ridge.test <- matrix(NA)
+for(i in 1:96){
+  error_rate_ridge.test[i] = mean(predicted.classes.test[,i] != y_test)
+}
+ # error_rate_ridge.test 
+ # lambda = 0.5 is best, yields error rate of 72/158 vs 71/158 full (full slightly better)
+
+# Dataset of best lambda probabilities
+ridge.probs.test <- probabilities.test[,91]
+```
+
+The optimal value of our shrinkage parameter $\lambda_R = 0.5$, which correctly classifies 86 of the 158 test matches. 
+
+### Lasso Regression
+
+Lasso regression is extremely similar to Ridge Regression. Like Ridge, Lasso is a *shrinkage method* that seeks to solve a Lagrange optimization similar to that of Ridge, detailed in the following problem:
+
+$$\beta^L_{\lambda} = \operatorname*{argmin}_{\beta \in \mathbb{R}^p} L+\lambda\sum_{j=1}^p|\beta_j|$$
+
+where $\lambda$ is the shrinkage penalizing term for our $\beta$ estimators obtained via logistic regression. As with Ridge, the equation given above trades off bias and variance, where it allows a small amount of bias into the model in exchange for a reduction in the model's variance. This hopefully provides an overall reduction in the Test Error Rate. Unlike Ridge, Lasso can often act as a variable selection technique, shrinking the more inconsequential variables all the way to 0 for their parameter estimates. 
+
+```{r log_lasso}
+###### Validation - find Lasso optimal lambda ######
+
+# 'grid' of lambdas from above, and all same datasets
+
+lasso.model <- glmnet(x_preds_training, y_training, family = "binomial", alpha = 1, lambda = grid)
+
+# Try different lambdas on validation set and choose lambda that "minimizes" test error
+probabilities.lasso <- lasso.model %>% predict(newx = x_preds_validate,type = "response")
+predicted.classes.lasso <- ifelse(probabilities.lasso > 0.5, 1, 0)
+
+# Model accuracy - error rates
+error_rate_lasso <- matrix(NA)
+for(i in 1:1000){
+  error_rate_lasso[i] = mean(predicted.classes.lasso[,i] != y_validate)
+}
+# error_rate_lasso
+# min(error_rate_lasso) # 820 to 883 lambda which corresponds to 1.5 to 0.25 
+
+range.lasso <- c(grid[820:883],0.2,0.1,0)
+
+##### Lambda Error Rate - Lasso Testing Data #####
+
+###### TRY TYPE = RESPONSE HERE TO SEE IF CHANGES ######
+# Model
+lasso.model.test <- glmnet(full_x_preds_train, full_y_train, family = "binomial", alpha = 1)
+
+probabilities.test.lasso <- lasso.model.test %>% predict(newx = x_test,type="response", s = range.lasso)
+predicted.classes.test.lasso <- ifelse(probabilities.test.lasso > 0.5, 1, 0)
+
+# Error Rate
+error_rate_lasso.test <- matrix(NA)
+for(i in 1:67){
+  error_rate_lasso.test[i] = mean(predicted.classes.test.lasso[,i] != y_test)
+}
+# error_rate_lasso.test 
+# lambda = 0.25 best with error rate of 71/158 vs 72/158 vs 71/158 (Lasso same as logistic, then Ridge)
+
+# Get lasso probs test dataset
+lasso.probs.test <- probabilities.test.lasso[,64]
+```
+
+The optimal value of our shrinkage parameter $\lambda = 0.25$, which correctly classifies 87 of the 158 test matches. 
+
+### PCR
+
+PCR is a dimension reduction method that seeks to transform the predictor variables $X_1,X_2,...,X_p$ to a new set of predictor variables $Z_1,Z_2,...,Z_M$ such that $M < p$. The method represents each $Z_m$ as a linear combination of our $p$ predictors in the model in the following manner: 
+
+$$Z_m = \sum_{j=1}^p \phi_{jm}X_j$$
+
+The new predictor variables $Z_1,...,Z_M$ are then used to fit a logistic regression model to our response $Y$ using maximum likelihood estimation. Crucially, PCR assumes that the response variable $Y$ does not play *any role* in determining our new set of predictor variables. Therefore, we first perform Principal Component Analysis (PCA) on our original data and get corresponding Principal Component (PC) loading vectors $\phi_j, j \in \{1,...,13\}$ which successively explain less and less of the total variance in our predictor variable data. Secondly we assess the performance of various PC sizes on the testing dataset to determine the appropriate number of PC's to use in the final full training dataset. PCA iteratively chooses each $\phi_j$ by solving the following optimization problem: 
+
+\begin{equation}
+\begin{split}
+\phi_1 = \operatorname*{max}_{\phi} Var(\phi^TX) \\
+\text{s.t.} \; \phi^T\phi = 1 \\
+\phi_2 = \operatorname*{max}_{\phi} Var(\phi^TX) \\
+\text{s.t.} \; \phi^T\phi = 1, \phi_1*\phi_2 = 0
+\end{split}
+\end{equation}
+
+
+Where each successive $\phi_j$ PC vector orthogonal to the rest. Due to the relatively highly correlated tennis data, the goal in PCR is to reduce the dimension of the data such that the decrease in variance in our estimation outweights the increase in bias from information compression. 
+
+
+```{r pca, fig.height=4,fig.width=7}
+##### Get PC's of all sizes on all data #####
+full_data <- rbind.data.frame(full_x_preds_train,x_test)
+pr.out.all <- prcomp(full_data)
+# Proportion of variance explained
+pr.var.all <- pr.out.all$sdev^2
+pve.all <- pr.var.all/sum(pr.var.all)
+plot(pve.all,type="b",col="blue",xlab="Principal Component", ylab="Proportion of Variance Explained",pch=19)
+```
+
+As shown in the scree plot above, there appears to be a dramatic dropoff after just the first principal component, which explains nearly 50% of the variation of our variables in our $\pmb{X}$ matrix. 
+
+```{r pcr_validating}
+# Create X objects for PC predictors of each size 1 to 13
+
+## NEED TO COMBINE TEST AND TRAIN IN ONE DATA SET
+full_data <- rbind.data.frame(full_x_preds_train,x_test)
+
+Z_pca <- matrix(NA,ncol=13,nrow = 852)
+
+for(i in 1:13){
+  Z_pca[,i] = pr.out.all$x[,i]
+}
+
+# Get train and test sets
+Z_pca <- as.data.frame(Z_pca)
+colnames(Z_pca) <- c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10","PC11","PC12","PC13")
+Z_pca$y <- rbind(full_y_train,y_test)
+Z_pca_train <- Z_pca[1:694,]
+Z_pca_test <- Z_pca[695:852,]
+
+# Predict PCs for test set
+pca.train <- prcomp(full_x_preds_train)
+pred.pcs <- predict(pca.train,x_test)
+
+
+# pred.pcs is predicted x values for 13 different components on test dataset! Now do log regression for each and see how many are correctly classified!
+test.pca.data <- cbind.data.frame(y_test,pred.pcs)
+
+# Fit logistic regression model to each PC size (M - 1:13)
+log.PC1 <- glm(y ~ PC1, data = Z_pca_train, family = binomial)
+log.PC2 <- glm(y ~ PC1 + PC2, data = Z_pca_train, family = binomial)
+log.PC3 <- glm(y ~ PC1 + PC2 + PC3, data = Z_pca_train, family = binomial)
+log.PC4 <- glm(y ~ PC1 + PC2 + PC3 + PC4, data = Z_pca_train, family = binomial)
+log.PC5 <- glm(y ~ PC1 + PC2 + PC3 + PC4 + PC5, data = Z_pca_train, family = binomial)
+log.PC6 <- glm(y ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6, data = Z_pca_train, family = binomial)
+log.PC7 <- glm(y ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7, data = Z_pca_train, family = binomial)
+log.PC8 <- glm(y ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8, data = Z_pca_train, family = binomial)
+log.PC9 <- glm(y ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9, data = Z_pca_train, family = binomial)
+log.PC10 <- glm(y ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = Z_pca_train, family = binomial)
+log.PC11 <- glm(y ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11, data = Z_pca_train, family = binomial)
+log.PC12 <- glm(y ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12, data = Z_pca_train, family = binomial)
+log.PC13 <- glm(y ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13, data = Z_pca_train, family = binomial)
+
+###### Test PCs of each size - Error Rates #####
+
+# First get data frames and matching col names for each test.pca.data
+test.pca1 <- data.frame(PC1 = test.pca.data[,2])
+test.pca2 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3])
+test.pca3 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4])
+test.pca4 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5])
+test.pca5 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5], PC5 = test.pca.data[,6])
+test.pca6 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5], PC5 = test.pca.data[,6], PC6 = test.pca.data[,7])
+test.pca7 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5], PC5 = test.pca.data[,6], PC6 = test.pca.data[,7], PC7 = test.pca.data[,8])
+test.pca8 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5], PC5 = test.pca.data[,6], PC6 = test.pca.data[,7], PC7 = test.pca.data[,8], PC8 = test.pca.data[,9])
+test.pca9 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5], PC5 = test.pca.data[,6], PC6 = test.pca.data[,7], PC7 = test.pca.data[,8], PC8 = test.pca.data[,9], PC9 = test.pca.data[,10])
+test.pca10 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5], PC5 = test.pca.data[,6], PC6 = test.pca.data[,7], PC7 = test.pca.data[,8], PC8 = test.pca.data[,9], PC9 = test.pca.data[,10], PC10 = test.pca.data[,11])
+test.pca11 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5], PC5 = test.pca.data[,6], PC6 = test.pca.data[,7], PC7 = test.pca.data[,8], PC8 = test.pca.data[,9], PC9 = test.pca.data[,10], PC10 = test.pca.data[,11], PC11 = test.pca.data[,12])
+test.pca12 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5], PC5 = test.pca.data[,6], PC6 = test.pca.data[,7], PC7 = test.pca.data[,8], PC8 = test.pca.data[,9], PC9 = test.pca.data[,10], PC10 = test.pca.data[,11], PC11 = test.pca.data[,12], PC12 = test.pca.data[,13])
+test.pca13 <- data.frame(PC1 = test.pca.data[,2], PC2 = test.pca.data[,3], PC3 = test.pca.data[,4], PC4 = test.pca.data[,5], PC5 = test.pca.data[,6], PC6 = test.pca.data[,7], PC7 = test.pca.data[,8], PC8 = test.pca.data[,9], PC9 = test.pca.data[,10], PC10 = test.pca.data[,11], PC11 = test.pca.data[,12], PC12 = test.pca.data[,13], PC13 = test.pca.data[,14])
+
+# Get probabilities and predictions - each PC size
+
+pc.predicted1 <- log.PC1 %>% predict(newdata = test.pca1,type="response")
+predicted.class1 <- ifelse(pc.predicted1 > 0.5, 1, 0)
+
+pc.predicted2 <- log.PC2 %>% predict(newdata = test.pca2, type = "response")
+predicted.class2 <- ifelse(pc.predicted2 > 0.5, 1, 0)
+
+pc.predicted3 <- log.PC3 %>% predict(newdata = test.pca3,type = "response")
+predicted.class3 <- ifelse(pc.predicted3 > 0.5, 1, 0)
+
+pc.predicted4 <- log.PC4 %>% predict(newdata = test.pca4,type = "response")
+predicted.class4 <- ifelse(pc.predicted4 > 0.5, 1, 0)
+
+pc.predicted5 <- log.PC5 %>% predict(newdata = test.pca5,type = "response")
+predicted.class5 <- ifelse(pc.predicted5 > 0.5, 1, 0)
+
+pc.predicted6 <- log.PC6 %>% predict(newdata = test.pca6,type = "response")
+predicted.class6 <- ifelse(pc.predicted6 > 0.5, 1, 0)
+
+pc.predicted7 <- log.PC7 %>% predict(newdata = test.pca7,type = "response")
+predicted.class7 <- ifelse(pc.predicted7 > 0.5, 1, 0)
+
+pc.predicted8 <- log.PC8 %>% predict(newdata = test.pca8,type = "response")
+predicted.class8 <- ifelse(pc.predicted8 > 0.5, 1, 0)
+
+pc.predicted9 <- log.PC9 %>% predict(newdata = test.pca9,type = "response")
+predicted.class9 <- ifelse(pc.predicted9 > 0.5, 1, 0)
+
+pc.predicted10 <- log.PC10 %>% predict(newdata = test.pca10,type = "response")
+predicted.class10 <- ifelse(pc.predicted10 > 0.5, 1, 0)
+
+pc.predicted11 <- log.PC11 %>% predict(newdata = test.pca11,type = "response")
+predicted.class11 <- ifelse(pc.predicted11 > 0.5, 1, 0)
+
+pc.predicted12 <- log.PC12 %>% predict(newdata = test.pca12,type = "response")
+predicted.class12 <- ifelse(pc.predicted12 > 0.5, 1, 0)
+
+pc.predicted13 <- log.PC13 %>% predict(newdata = test.pca13,type = "response")
+predicted.class13 <- ifelse(pc.predicted13 > 0.5, 1, 0)
+
+# Error Rates
+pca_val_err_rate <- c(mean(predicted.class1 != test.pca.data$y),
+                      mean(predicted.class2 != test.pca.data$y),
+                      mean(predicted.class3 != test.pca.data$y),
+                      mean(predicted.class4 != test.pca.data$y),
+                      mean(predicted.class5 != test.pca.data$y),
+                      mean(predicted.class6 != test.pca.data$y),
+                      mean(predicted.class7 != test.pca.data$y),
+                      mean(predicted.class8 != test.pca.data$y),
+                      mean(predicted.class9 != test.pca.data$y),
+                      mean(predicted.class10 != test.pca.data$y),
+                      mean(predicted.class11 != test.pca.data$y),
+                      mean(predicted.class12 != test.pca.data$y),
+                      mean(predicted.class13 != test.pca.data$y)
+                      ) 
+# pca_val_err_rate # Just one PC is best! gives lowest Error Rate at 43.67% or 69/158 (best method of all so far!)
+```
+
+Not unexpectedly, PCR with just one PC variable produces the lowest Test Error Rate at approximately 43.7%, correctly classifying 89 of the 158 matches in the testing dataset. 
+
+### Optimal Model
+
+After fitting logistic regression using the full set of predictor variables and testing out various regularization and dimension reduction techniques, we find that **PCR** yields the lowest testing error rate, followed by the full logistic regression and the Ridge regression counterpart, and lastly Lasso regression.
+
+## Linear Discriminant Analysis (LDA)
+
+LDA uses Bayes' theorem in order to indirectly estimate probabilities, which states that:
+
+$$P(Y = k | \pmb{X = \pmb{x}}) = \frac{\pi_kf_k(\pmb{x})}{\sum_{i=1}^K\pi_if_i(\pmb{x})}$$ 
+
+where $\pi_k = P(Y=k), k = \{0,1\}$ where $k$ represents the class of Y, $f_k(\pmb{x}) = P(\pmb{X = x})| Y= k)$ and ${\sum_{i=1}^K\pi_if_i(\pmb{x})} = P(\pmb{X} = \pmb{x})$. LDA estimates the left-hand side of the equation using estimates from the data itself. In multivariate LDA, we typically assume that $f_k(\pmb{x}) \sim N(\pmb{\mu_k},\Sigma)$ where each class $k$ has its own mean vector and all share the same covariance matrix $\Sigma$. After some algebra we obtain the *discriminant function*:
+
+$$\delta_k(\pmb{x}) = \pmb{x}^T\Sigma^{-1}\pmb{\mu_k} - \frac{1}{2}\pmb{\mu_k}^T \Sigma^{-1}\pmb{\mu_k} + log(\pi_k)$$
+
+where we assign an observation $\pmb{X} = \pmb{x}$ to whichever class yields the largest value.
+
+We first perform LDA on the full set of predictors, and then perform LDA on the PCA-transformed first predictor which explained nearly half of the variation in our data $\pmb{X}$ to compare its performance to logistic regression. 
+
+```{r lda}
+# Get full train, test and overall datasets
+
+x_y_train <- cbind.data.frame(full_x_preds_train,full_y_train)
+x_y_test <- cbind.data.frame(x_test,y_test)
+colnames(x_y_train)[14] <- "y"
+colnames(x_y_test)[14] <- "y"
+all_data_x_y <- rbind.data.frame(x_y_train,x_y_test)
+  
+# Fit lda model to training data (with validation as well)
+lda.fit <- lda(y ~ ., data=x_y_train)
+
+# Get predictions
+lda.pred <- predict(lda.fit, x_y_test)
+lda.class <- lda.pred$class
+# table(lda.class,x_y_test$y)
+# mean(lda.class != x_y_test$y) # slightly worse than full logistic
+
+# Get dataset of probs
+lda.full.probs <- lda.pred$posterior[,2]
+```
+
+
+```{r lda.pca}
+# Get predicted PCA new x values ('z') for test
+pca.train <- prcomp(full_x_preds_train)
+pred.pcs <- predict(pca.train,x_test)
+
+# Get 'new' data
+z_y_train <- cbind.data.frame(pca.train$x[,1],full_y_train)
+colnames(z_y_train) <- c("PC1","y")
+z_y_test <- cbind.data.frame(pred.pcs[,1],y_test)
+colnames(z_y_test) <- c("PC1","y")
+
+# Fit lda model to training data (with validation as well)
+lda.fit.pca <- lda(y ~ ., data=z_y_train)
+
+# Get predictions
+lda.pred.pca <- predict(lda.fit.pca, z_y_test)
+lda.class.pca <- lda.pred.pca$class
+# table(lda.class.pca,z_y_test$y)
+# mean(lda.class.pca != z_y_test$y) # slightly better now 70/158 
+
+# Get dataset of probs
+lda.pca.probs <- lda.pred.pca$posterior[,2]
+```
+
+### Optimal Model
+
+Just as with logistic regression, performing LDA with the first PC vector yields the lowest test error rate, correctly classifying 88 of the 158 matches in the testing dataset. LDA performed on the full set of predictors correctly classified 85 of the 158 matches. 
+
+### Generalized Additive Models (GAMs)
+
+GAMs provide greater flexibility in fitting our qualitative win-loss response by allowing *non-linear* $f_j$ fits to each $X_j$ variable. Therefore, GAMs tend to reduce the bias of predictions while increasing the variance when compared to standard logistic regression. While there is a wide class of functions that can be used for the $f_j$, we use cubic smoothing splines which solve the following optimization problem:
+
+$$\hat{f_\lambda} = \operatorname*{argmin}_{f\in \mathcal{F}} L + \lambda\int_{\mathcal{X}}\{f''\{x\}\}^2dx $$
+
+where $\mathcal{F}$ is a class of basis functions. The $\lambda$ parameter controls the amount of shrinkage of our cubic smoothing spline functions for each variable, reducing the variance and 'wigglyness' of the functions to fit the model which lowers the effective degrees of freedom in the model as $\lambda$ increases. 
+
+As with logistic regression, these non-linear functions are assumed to be additive in their impact on the log-odds, represented as: 
+
+$$log\bigg(\frac{p(\pmb{X})}{1-p(\pmb{X})}\bigg) = \beta_0+f_1(X_1)+...+f_p(X_p)$$
+
+As done previously, we first build a GAM using the full model with all standardized variables as with logistic regression. Then we build a GAM using solely the first PC-transformed variable, represented as:
+
+$$log\bigg(\frac{p(\pmb{X})}{1-p(\pmb{X})}\bigg) = f_{PC1}(Z_1)$$
+
+and compare their performances on the Test Error Rates. 
+
+```{r gam.full}
+gam.train <- gam(y ~ s(Ace.DF.ratio) + s(BP.Save.Pct) + s(Net.Wpct) + s(Overall.Wpct) + s(Serve1.Pct) + s(Serve1.Wpct) + s(Serve2.Wpct) + s(Win.Err.Ratio) + s(Serve.Plus1.Pct) + s(Zero.to.Four.Wpct) + Surface.Clay + Surface.Grass + s(Rank.Pts.Diff), data = x_y_train, method = "REML", select = TRUE )
+
+# Smaller p-val more 'significant' given all other predictors
+# summary(gam.train)
+
+# Predict
+preds.gam <- predict(gam.train, newdata =x_y_test, type = "response")
+preds.gam.class <- ifelse(preds.gam > 0.5,1,0)
+# table(preds.gam.class,y_test)
+# mean(c(preds.gam.class) != y_test) # 72/158
+
+```
+
+
+```{r gam.pca}
+gam.train.pca <- gam(y ~ s(PC1), data = z_y_train, method = "REML", select = TRUE)
+
+# Predict
+preds.gam.pca <- predict(gam.train.pca, newdata = z_y_test, type = "response")
+preds.gam.pca.class <- ifelse(preds.gam.pca > 0.5,1,0)
+# table(preds.gam.pca.class,y_test)
+# mean(c(preds.gam.pca.class) != y_test) # 70/158
+# sum(y_test == 1)
+```
+
+
+
+### Optimal Model
+
+The full set of predictor variables corrrectly classifies 86 of the 158 matches in the testing dataset using a full GAM with cubic smoothing splines. Once again, using the first PC-transformed variable as the lone predictor, we find a slightly improved model in reducing prediction error. This variant of the GAM correcty classifies 88 of the 158 matches in the testing set. 
+
+
+```{r final_datasets}
+# tennis_train_vars
+  # x_preds_training
+  # y_training
+# validate_stats_final
+  # x_preds_validate
+  # y_validate
+# full_train_vars
+  # full_x_preds_train
+  # full_y_trian
+
+test_stats_final <- cbind.data.frame(x_test,y_test)
+colnames(test_stats_final)[14] <- "y"
+test_stats_final$y <- as.factor(test_stats_final$y)
+
+# Fit averaged data model on testing set
+log.full.test <- glm(y ~ ., data = test_stats_final, family = binomial)
+# summary(log.full.test)
+
+# test_stats_final
+   # x_test
+   # y_test
+# PCA
+  # z_y_train
+    # z_preds_train 
+    # z_train_response
+  # z_y_test
+    # z_preds_test
+
+# all_data_x_y
+  # x_y_train
+  # x_y_test
+```
+
+## Random Forest
+
+The random forest algorithm for classification problems is a tree-based method that seeks to assign observations to classes by splitting the predictor variable space ($\pmb{X}$) into distinct regions. Random forests are composed of decision trees, which are generated from recursive binary splitting of variables chosen by minimizing a diagnostic statistic, typically the Test Error Rate, $E = 1 - \operatorname*{max}_{k} \hat{p}_{mk}$, where $\hat{p}_{mk}$ is the proportion of observations in the $m^{th}$ region of $\pmb{X}$ that belong to class $k$.  For each decision tree, a new observation is assigned the class that has the majority vote of the training observations in that same region of $\pmb{X}$. In practice, the Gini index is more commonly used to grow decision trees, defined by 
+
+$$G = \sum_{k=1}^K\hat{p}_{mk}(1-\hat{p}_{mk})$$
+
+where scores determine node or leaf 'purity' of a final class assessment for a decision tree. Lower Gini index scores indicate similarity in class assignment for all observation in that specific leaf. If the Gini score or the classification error rate are decreased enough (by some pre-determined threshold) at a corresponding split, the decision tree will add that additional split in its construction.  
+
+Random forests use the averages (bagging) of the classifications assigned by many decision trees to help reduce variance in the prediction estimates. For our binary class problem of win/loss, a new obsevation $X^{*}$ is given the probability of winning based on $p(X^{*}) = \frac{1}{B}\sum_{b=1}^B I(Y^{*} = 1)$, where $B$ is the number of bootstrap datasets constructed, each building a decision tree.  Furthermore, random forests use a random *subset* of variables at each split in a decision tree to help decorrelate the trees, reducing the variance in predictions with the goal of improved accuracy.  
+
+```{r rf.train, fig.height=4}
+set.seed(123)
+# Get models for each mtry on training set (use default B = 500 for bootstrap datasets)
+rf.train1 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 1, importance = TRUE, ntree = 2000 )
+rf.train2 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 2, importance = TRUE, ntree = 2000 )
+rf.train3 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 3, importance = TRUE, ntree = 2000 )
+rf.train4 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 4, importance = TRUE, ntree = 2000 )
+rf.train5 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 5, importance = TRUE, ntree = 2000 )
+rf.train6 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 6, importance = TRUE, ntree = 2000 )
+rf.train7 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 7, importance = TRUE, ntree = 2000 )
+rf.train8 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 8, importance = TRUE, ntree = 2000 )
+rf.train9 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 9, importance = TRUE, ntree = 2000 )
+rf.train10 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 10, importance = TRUE, ntree = 2000 )
+rf.train11 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 11, importance = TRUE, ntree = 2000 )
+rf.train12 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 12, importance = TRUE, ntree = 2000 )
+rf.train13 <- randomForest(as.factor(y) ~ ., data = full_train_vars,mtry = 13, importance = TRUE, ntree = 2000 )
+
+# Get predictions for each mtry size
+yhat.rf1 <- predict(rf.train1, newdata = test_stats_final)
+yhat.rf2 <- predict(rf.train2, newdata = test_stats_final)
+yhat.rf3 <- predict(rf.train3, newdata = test_stats_final)
+yhat.rf4 <- predict(rf.train4, newdata = test_stats_final)
+yhat.rf5 <- predict(rf.train5, newdata = test_stats_final)
+yhat.rf6 <- predict(rf.train6, newdata = test_stats_final)
+yhat.rf7 <- predict(rf.train7, newdata = test_stats_final)
+yhat.rf8 <- predict(rf.train8, newdata = test_stats_final)
+yhat.rf9 <- predict(rf.train9, newdata = test_stats_final)
+yhat.rf10 <- predict(rf.train10, newdata = test_stats_final)
+yhat.rf11 <- predict(rf.train11, newdata = test_stats_final)
+yhat.rf12 <- predict(rf.train12, newdata = test_stats_final)
+yhat.rf13 <- predict(rf.train13, newdata = test_stats_final)
+
+# Error rates
+rf.error.rates <- c(mean(yhat.rf1 != y_test),
+                    mean(yhat.rf2 != y_test),
+                    mean(yhat.rf3 != y_test),
+                    mean(yhat.rf4 != y_test),
+                    mean(yhat.rf5 != y_test),
+                    mean(yhat.rf6 != y_test),
+                    mean(yhat.rf7 != y_test),
+                    mean(yhat.rf8 != y_test),
+                    mean(yhat.rf9 != y_test),
+                    mean(yhat.rf10 != y_test),
+                    mean(yhat.rf11 != y_test),
+                    mean(yhat.rf12 != y_test),
+                    mean(yhat.rf13 != y_test)
+                    )
+
+# rf.error.rates # Looks like  9 gives us the best bang for buck
+varImpPlot(rf.train9,main="Variable Importance")
+
+# Get dataset of probs
+rf.probs <- predict(rf.train9, newdata = test_stats_final,type = "prob")
+rf.probs.test <- rf.probs[,2]
+```
+
+
+
+### Optimal Model
+
+We find that the random forest model using `mtry` $= 9$ or a 9 random variable split leads to the lowest Test Error Rate, correctly classifying 87 out of the 158 matches. Furthermore, the variable importance plot above shows us that, when using out-of-bag (OOB) observations in determining prediction accuracy for each tree with and without certain variables, the Mean Decrease in Accuracy without the `Overall.Wpct` is by far the most significant variable, followed by the `Win.Error.pct` ratio statistic. The `Zero.to.Four.pct` statistic also makes the top five in most influential in reducing the error rates for the random forest algorithm model, suggesting that two of the top five variables in prediction accuracy were from the newly created ones for this dataset. 
+
+
+
+## KNN Classification
+
+KNN (K-Nearest Neighbors) is completely non-parametric in that it simply assigns each new observation $\pmb{x_0}$ to the class with the most frequent outcome among its $K$ nearest neighbors, where nearest is defined in terms of Euclidean distance $\sqrt{\sum_{j=1}^p (x_{0j} - x_{ij})^2}$, where $p$ is the number of variables in $\pmb{x_0}$. More formally, KNN estimates the conditional probability for class $j$ as the fraction of points in the neighborhood of $\pmb{x_0}$ ($\mathcal{N_0}$) whose value are in the same class $j$:
+
+$$\widehat{P(Y = j|\pmb{X} = \pmb{x_0})} = \frac{1}{K}\sum_{i \in \mathcal{N_0}} I(y_i = j)$$
+
+The class $j$ with the highest estimated probability is the class $\pmb{x_0}$ is assigned.
+
+```{r knn}
+set.seed(123)
+# Try a variety of k (1,2,3,5,10,15,25,35,40,45,50,75,100)
+knn.pred1 <-knn(full_x_preds_train,x_test,full_y_train,k = 1)
+knn.pred2 <-knn(full_x_preds_train,x_test,full_y_train,k = 2)
+knn.pred3 <-knn(full_x_preds_train,x_test,full_y_train,k = 3)
+knn.pred5 <-knn(full_x_preds_train,x_test,full_y_train,k = 5)
+knn.pred10 <-knn(full_x_preds_train,x_test,full_y_train,k = 10)
+knn.pred15 <-knn(full_x_preds_train,x_test,full_y_train,k = 15)
+knn.pred25 <-knn(full_x_preds_train,x_test,full_y_train,k = 25)
+knn.pred35 <-knn(full_x_preds_train,x_test,full_y_train,k = 35)
+knn.pred40 <-knn(full_x_preds_train,x_test,full_y_train,k = 40)
+knn.pred45 <-knn(full_x_preds_train,x_test,full_y_train,k = 45)
+knn.pred50 <-knn(full_x_preds_train,x_test,full_y_train,k = 50)
+knn.pred60 <-knn(full_x_preds_train,x_test,full_y_train,k = 60)
+knn.pred75 <-knn(full_x_preds_train,x_test,full_y_train,k = 75)
+knn.pred100 <-knn(full_x_preds_train,x_test,full_y_train,k = 100)
+
+knn.err.rates <- c(mean(knn.pred1 != y_test),
+                   mean(knn.pred2 != y_test),
+                   mean(knn.pred3 != y_test),
+                   mean(knn.pred5 != y_test),
+                   mean(knn.pred10 != y_test),
+                   mean(knn.pred15 != y_test),
+                   mean(knn.pred25 != y_test),
+                   mean(knn.pred35 != y_test),
+                   mean(knn.pred40 != y_test),
+                   mean(knn.pred45 != y_test),
+                   mean(knn.pred50 != y_test),
+                   mean(knn.pred60 != y_test),
+                   mean(knn.pred75 != y_test),
+                   mean(knn.pred100 != y_test)
+                   )
+
+# knn.err.rates
+
+# Get Dataset of probs
+knn.preds <-knn(full_x_preds_train,x_test,full_y_train,k = 60,prob = TRUE)
+knn.probs.highest <- attributes(knn.preds)
+knn.probs.highest <- as.data.frame(knn.probs.highest)
+knn.probs.highest$pred <- knn.preds
+knn.probs.highest$prob <- ifelse(knn.probs.highest$pred == 1, knn.probs.highest$prob, 1-knn.probs.highest$prob)
+knn.probs.test <- knn.probs.highest$prob
+```
+
+On the full dataset, setting $K = 60$ seems to provide the best trade-off in bias and variance in regards to yielding the lowest test error rate in its predictions, as it correctly classifies 90 of the 158 test matches. 
+
+```{r knn.pca}
+set.seed(123)
+# Get z_preds_train and z_preds test
+z_preds_train <- z_y_train$PC1
+z_preds_train <- as.data.frame(z_preds_train)
+z_train_response <- z_y_train$y
+z_train_response <- as.data.frame(z_train_response)
+z_preds_test <- z_y_test$PC1
+z_preds_test <- as.data.frame(z_preds_test)
+
+# Try a variety of k (1,2,3,5,10,15,25,35,40,45,50,75,100)
+knn.pred.pca1 <-knn(z_preds_train,z_preds_test,full_y_train,k = 1)
+knn.pred.pca2 <-knn(z_preds_train,z_preds_test,full_y_train,k = 2)
+knn.pred.pca3 <-knn(z_preds_train,z_preds_test,full_y_train,k = 3)
+knn.pred.pca5 <-knn(z_preds_train,z_preds_test,full_y_train,k = 5)
+knn.pred.pca10 <-knn(z_preds_train,z_preds_test,full_y_train,k = 10)
+knn.pred.pca15 <-knn(z_preds_train,z_preds_test,full_y_train,k = 15)
+knn.pred.pca25 <-knn(z_preds_train,z_preds_test,full_y_train,k = 25)
+knn.pred.pca35 <-knn(z_preds_train,z_preds_test,full_y_train,k = 35)
+knn.pred.pca40 <-knn(z_preds_train,z_preds_test,full_y_train,k = 40)
+knn.pred.pca45 <-knn(z_preds_train,z_preds_test,full_y_train,k = 45)
+knn.pred.pca50 <-knn(z_preds_train,z_preds_test,full_y_train,k = 50)
+knn.pred.pca60 <-knn(z_preds_train,z_preds_test,full_y_train,k = 60)
+knn.pred.pca75 <-knn(z_preds_train,z_preds_test,full_y_train,k = 75)
+knn.pred.pca100 <-knn(z_preds_train,z_preds_test,full_y_train,k = 100)
+
+knn.err.rates.pca <- c(mean(knn.pred.pca1 != y_test),
+                   mean(knn.pred.pca2 != y_test),
+                   mean(knn.pred.pca3 != y_test),
+                   mean(knn.pred.pca5 != y_test),
+                   mean(knn.pred.pca10 != y_test),
+                   mean(knn.pred.pca15 != y_test),
+                   mean(knn.pred.pca25 != y_test),
+                   mean(knn.pred.pca35 != y_test),
+                   mean(knn.pred.pca40 != y_test),
+                   mean(knn.pred.pca45 != y_test),
+                   mean(knn.pred.pca50 != y_test),
+                   mean(knn.pred.pca60 != y_test),
+                   mean(knn.pred.pca75 != y_test),
+                   mean(knn.pred.pca100 != y_test)
+                   )
+
+# knn.err.rates.pca
+
+# Get Dataset of probs
+knn.preds.pca <-knn(z_preds_train,z_preds_test,full_y_train,k = 10,prob = TRUE)
+knn.probs.highest.pca <- attributes(knn.preds.pca)
+knn.probs.highest.pca <- as.data.frame(knn.probs.highest.pca)
+knn.probs.highest.pca$pred <- knn.preds.pca
+knn.probs.highest.pca$prob <- ifelse(knn.probs.highest.pca$pred == 1, knn.probs.highest.pca$prob, 1-knn.probs.highest.pca$prob)
+knn.probs.pca.test <- knn.probs.highest.pca$prob
+```
+
+When using just the first PC vector as the sole predictor variable, the KNN model which minimizes the Test Error Rate occurs when $K = 10$, correctly classifying 89 of the 158 test matches. 
+
+
+#### Optimal Model
+
+Interestingly in the KNN case unlike the other models, we see better performance using the entire set of predictor variables rather than the most explanatory PC-transformed variable. Thus, KNN does not appear to be suffering from the 'curse of dimensionality' problem on our dataset, as the 13 predictor variables used offer a slightly lower Test Error Rate than when using the sole PC variable that is a linear combination of all the predictors and explained nearly half of the variance in the dataset. 
+
+# Model Results Summary
+
+
+```{r model.summaries}
+ err.rates.models <- data.frame(Model = c("Logistic","Logistic","Logistic","Logistic","LDA","LDA","GAM","GAM","Random Forest","KNN","KNN"), 
+ Type = c("Full","Ridge Regularized","Lasso Regularized","PCA Compressed","Full","PC Compressed","Full","PC Compressed","Full","Full","PC Compressed"),
+ Error.Rate = c("44.9%","45.6%","44.9%","43.7%","46.2%","44.3%","45.6%","44.3%","44.9%","43.0%","43.7%")
+ )# round this to nearest tenth of a percent)
+names(err.rates.models)[3] <- "Error Rate"
+
+# Make LaTeX Table - modify appropriately below!
+# kable(err.rates.models,format="latex",booktabs = TRUE) 
+```
+
+\begin{table}[!htbp]
+\centering
+\begin{tabular}{lll}
+\toprule
+Model & Type & Error Rate\\
+\midrule
+Logistic & Full & 44.9\%\\
+Logistic & Ridge Regularized & 45.6\%\\
+Logistic & Lasso Regularized & 44.9\%\\
+Logistic & PCA Compressed & 43.7\%\\
+LDA & Full & 46.2\%\\
+LDA & PC Compressed & 44.3\%\\
+GAM & Full & 45.6\%\\
+GAM & PC Compressed & 44.3\%\\
+Random Forest & Full & 44.9\%\\
+KNN & Full & 43.0\%\\
+KNN & PC Compressed & 43.7\%\\
+\bottomrule
+\end{tabular}
+\caption{Test Error Rates}
+\end{table}
+
+As shown in Table 2, **KNN** performed the best in minimizing the Test Error Rate among all models tested, with an error rate of 43.0% in its best model with all the predictor variables. While all models achieved similar Test Error rates, we note that the Ridge and Lasso regularized models were worse than the logistic regression model with no regularization performed on its parameters. However, dimension reduction using PCA tended to decrease the error rate for all models in which it was applied. 
+
+# Evaluation: Betting Performance
+
+## Implied Probability
+
+Our dataset gives odds from Bet365 in Decimal odds $d_i$ for each player $i$ of a given match, which means for every 1 unit wagered that is successful, the bettor gets $d_i$ units in return. We convert these Decimal odds into an implied probability that the oddsmakers give a player of winning the match as $p_i^{implied} = \frac{1}{d_i}$. For example, if a player is given odds 2.00 to win a match, his implied probability is $p_i^{implied} = \frac{1}{2} = 0.5$, and if one bets \$1 and is succesful in the wager, they will get \$2 in return (a net profit of \$1 in this case).
+
+## Strategies
+
+There are a wide variety of betting strategies that could be employed for any given model. In this analysis, we consider three different strategies for two classes of matches, resulting in a total of six different strategies. Let $r_i =$ the amount (in $\$$) risked on player $i$, $p_i^{model} =$ the predicted probability of player $i$ winning under the given model of consideration, and $b_i =$ the net odds, or the multiplier of one's $r_i$ denoting the amount of profit for a successful bet on player $i$, given as $d_i - 1$ for decimal odds. 
+
+
+The two classes are: 
+
+(1) Both competing players have $\pmb{5^{+}}$ previous matches in the training dataset, and
+
+(2) Both competing players do not have $\pmb{5^{+}}$ previous matches in the training dataset. 
+
+For each class, the following three strategies will be evaulated:
+
+1.  **Betting on the predicted winner**
+
+Under this strategy, we place a fixed bet $c$ on the player $i$ that the model predicts to win, i.e.
+
+\begin{equation}
+  r_i =
+    \begin{cases}
+      c, & \text{if $p_i^{model} > 0.5$} \\
+      0, & \text{otherwise}
+    \end{cases}       
+\end{equation}
+
+2.  **Betting the predicted winner when at better odds**
+
+Under this strategy, we place a fixed bet $c$ on a player $i$ when the predicted probability of winning under the model is greater than the implied probability from the betting odds by *at least* 5% (to overcome the 'juice'). Therefore, this strategy only places bets when the model perceives an 'edge' to be gained that warrants taking the risk in placing the wager. 
+
+\begin{equation}
+  r_i =
+    \begin{cases}
+      c, & \text{if $p_i^{model} > p_i^{implied}+0.05$} \\
+      0, & \text{otherwise}
+    \end{cases}       
+\end{equation}
+
+3.  **Betting the predicted winner using the Kelly criterion**
+
+Under this final strategy, we use the Kelly criterion which is widely regarded as an optimal betting/investing formulation that calculates how much one should risk on player $i$ that is based on how large the perceived edge is from the model over the implied probabilities from the betting odds. We place a maximum bet size of $c$ on the winner if there is a perceived edge such that:
+
+\begin{equation}
+  r_i =
+    \begin{cases}
+      c*\frac{p_i^{model}b_i - (1-p_i^{model})}{b_i}, & \text{if $p_i^{model} > p_i^{implied} + 0.05$} \\
+      0, & \text{otherwise}
+    \end{cases}       
+\end{equation}
+
+The above three strategies get progressively more complex and selective in determining one's wager amount $r_i$, with the final two not placing a bet on every match. For the Kelly criterion, often the size $c$ of the maximum bet evolves dynamically with one's bankroll, however in this analysis we keep it fixed and equal with the other strategies for comparative ROI purposes. 
+
+## Results
+
+```{r probs.bet.lines.data}
+### All are probability of class == 1 or a Win
+
+#1. Full Log - log.test.probs
+#2. Ridge Log - ridge.probs.test
+#3. Lasso Log - lasso.probs.test
+#4. PCR Log - pc.predicted1 
+#5. LDA Full - lda.full.probs
+#6. LDA PC1 - lda.pca.probs
+#7. GAM Full - preds.gam 
+#8. GAM PC1 - preds.gam.pca
+#9. RF - rf.probs.test
+#10. KNN Full - knn.probs.test
+#11. KNN PC1 - knn.probs.pca.test
+
+# Betting lines - tennis_test_final
+
+# Create vector of betting odds of player 1 winning (to match in line with their probs in above datasets)
+test.bet.odds.p1 <- ifelse(tennis_test_final$y == 1, tennis_test_final$B365W,tennis_test_final$B365L)
+test.bet.odds.p2 <- ifelse(tennis_test_final$y == 0, tennis_test_final$B365W,tennis_test_final$B365L)
+
+# Append betting lines to each dataset
+options(scipen=999) # get rid of scientific notation effectively
+
+#1. 
+full.log.bets <- data.frame(prob.p1 = log.test.probs, odds.p1 = test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+full.log.bets$implied.prob.p1 <- 1/full.log.bets$odds.p1
+full.log.bets$implied.prob.p2 <- 1/full.log.bets$odds.p2
+full.log.bets$y <- test_stats_final$y
+
+#2.
+ridge.log.bets <- data.frame(prob.p1 = ridge.probs.test, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+ridge.log.bets$implied.prob.p1 <- 1/ridge.log.bets$odds.p1
+ridge.log.bets$implied.prob.p2 <- 1/ridge.log.bets$odds.p2
+ridge.log.bets$y <- test_stats_final$y
+
+#3.
+lasso.log.bets <- data.frame(prob.p1 = lasso.probs.test, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+lasso.log.bets$implied.prob.p1 <- 1/lasso.log.bets$odds.p1
+lasso.log.bets$implied.prob.p2 <- 1/lasso.log.bets$odds.p2
+lasso.log.bets$y <- test_stats_final$y
+
+#4.
+pc1.log.bets <- data.frame(prob.p1 = pc.predicted1, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+pc1.log.bets$implied.prob.p1 <- 1/pc1.log.bets$odds.p1
+pc1.log.bets$implied.prob.p2 <- 1/pc1.log.bets$odds.p2
+pc1.log.bets$y <- test_stats_final$y
+
+#5.
+full.lda.bets <- data.frame(prob.p1 = lda.full.probs, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+full.lda.bets$implied.prob.p1 <- 1/full.lda.bets$odds.p1
+full.lda.bets$implied.prob.p2 <- 1/full.lda.bets$odds.p2
+full.lda.bets$y <- test_stats_final$y
+
+#6.
+pc1.lda.bets <- data.frame(prob.p1 = lda.pca.probs, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+pc1.lda.bets$implied.prob.p1 <- 1/pc1.lda.bets$odds.p1
+pc1.lda.bets$implied.prob.p2 <- 1/pc1.lda.bets$odds.p2
+pc1.lda.bets$y <- test_stats_final$y
+
+#7.
+gam.bets <- data.frame(prob.p1 = preds.gam, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+gam.bets$implied.prob.p1 <- 1/gam.bets$odds.p1
+gam.bets$implied.prob.p2 <- 1/gam.bets$odds.p2
+gam.bets$y <- test_stats_final$y
+
+#8.
+gam.pca.bets <- data.frame(prob.p1 = preds.gam.pca, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+gam.pca.bets$implied.prob.p1 <- 1/gam.pca.bets$odds.p1
+gam.pca.bets$implied.prob.p2 <- 1/gam.pca.bets$odds.p2
+gam.pca.bets$y <- test_stats_final$y
+
+#9.
+rf.bets <- data.frame(prob.p1 = rf.probs.test, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+rf.bets$implied.prob.p1 <- 1/rf.bets$odds.p1
+rf.bets$implied.prob.p2 <- 1/rf.bets$odds.p2
+rf.bets$y <- test_stats_final$y
+
+#10.
+full.knn.bets <- data.frame(prob.p1 = knn.probs.test, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+full.knn.bets$implied.prob.p1 <- 1/full.knn.bets$odds.p1
+full.knn.bets$implied.prob.p2 <- 1/full.knn.bets$odds.p2
+full.knn.bets$y <- test_stats_final$y
+
+#11.
+knn.pc1.bets <- data.frame(prob.p1 = knn.probs.pca.test, odds.p1 =test.bet.odds.p1, odds.p2 = test.bet.odds.p2)
+knn.pc1.bets$implied.prob.p1 <- 1/knn.pc1.bets$odds.p1
+knn.pc1.bets$implied.prob.p2 <- 1/knn.pc1.bets$odds.p2
+knn.pc1.bets$y <- test_stats_final$y
+
+```
+
+
+```{r bet.results.class1}
+###### Class 1 - Betting Results ######
+  # NOTE: 'c' = $1 per bet for ALL strategies
+
+#### Strategy One - All Winners ####
+
+#1.
+log.full.return <- ifelse(full.log.bets$prob.p1 > 0.5 & full.log.bets$y == 1, full.log.bets$odds.p1 - 1, 
+                          ifelse(full.log.bets$prob.p1 > 0.5 & full.log.bets$y == 0, -1,
+                          ifelse(full.log.bets$prob.p1 < 0.5 & full.log.bets$y == 0, full.log.bets$odds.p2 - 1, -1)))
+full.log.bets$return <- log.full.return
+log.full.profit <- sum(log.full.return)
+
+#2.
+log.ridge.return <- ifelse(ridge.log.bets$prob.p1 > 0.5 & ridge.log.bets$y == 1, ridge.log.bets$odds.p1 - 1, 
+                          ifelse(ridge.log.bets$prob.p1 > 0.5 & ridge.log.bets$y == 0, -1,
+                          ifelse(ridge.log.bets$prob.p1 < 0.5 & ridge.log.bets$y == 0, ridge.log.bets$odds.p2 - 1, -1)))
+ridge.log.bets$return <- log.ridge.return
+log.ridge.profit <- sum(log.ridge.return)
+
+#3.
+log.lasso.return <- ifelse(lasso.log.bets$prob.p1 > 0.5 & lasso.log.bets$y == 1, lasso.log.bets$odds.p1 - 1, 
+                          ifelse(lasso.log.bets$prob.p1 > 0.5 & lasso.log.bets$y == 0, -1,
+                          ifelse(lasso.log.bets$prob.p1 < 0.5 & lasso.log.bets$y == 0, lasso.log.bets$odds.p2 - 1, -1)))
+lasso.log.bets$return <- log.lasso.return
+log.lasso.profit <- sum(log.lasso.return)
+
+#4.
+pc1.log.return <- ifelse(pc1.log.bets$prob.p1 > 0.5 & pc1.log.bets$y == 1, pc1.log.bets$odds.p1 - 1, 
+                          ifelse(pc1.log.bets$prob.p1 > 0.5 & pc1.log.bets$y == 0, -1,
+                          ifelse(pc1.log.bets$prob.p1 < 0.5 & pc1.log.bets$y == 0, pc1.log.bets$odds.p2 - 1, -1)))
+pc1.log.bets$return <- pc1.log.return
+pc1.log.profit <- sum(pc1.log.return)
+
+#5.
+full.lda.return <- ifelse(full.lda.bets$prob.p1 > 0.5 & full.lda.bets$y == 1, full.lda.bets$odds.p1 - 1, 
+                          ifelse(full.lda.bets$prob.p1 > 0.5 & full.lda.bets$y == 0, -1,
+                          ifelse(full.lda.bets$prob.p1 < 0.5 & full.lda.bets$y == 0, full.lda.bets$odds.p2 - 1, -1)))
+full.lda.bets$return <- full.lda.return
+full.lda.profit <- sum(full.lda.return)
+
+#6.
+pc1.lda.return <- ifelse(pc1.lda.bets$prob.p1 > 0.5 & pc1.lda.bets$y == 1, pc1.lda.bets$odds.p1 - 1, 
+                          ifelse(pc1.lda.bets$prob.p1 > 0.5 & pc1.lda.bets$y == 0, -1,
+                          ifelse(pc1.lda.bets$prob.p1 < 0.5 & pc1.lda.bets$y == 0, pc1.lda.bets$odds.p2 - 1, -1)))
+pc1.lda.bets$return <- pc1.lda.return
+pc1.lda.profit <- sum(pc1.lda.return)
+
+#7.
+gam.full.return <- ifelse(gam.bets$prob.p1 > 0.5 & gam.bets$y == 1, gam.bets$odds.p1 - 1, 
+                          ifelse(gam.bets$prob.p1 > 0.5 & gam.bets$y == 0, -1,
+                          ifelse(gam.bets$prob.p1 < 0.5 & gam.bets$y == 0, gam.bets$odds.p2 - 1, -1)))
+gam.bets$return <- gam.full.return
+gam.full.profit <- sum(gam.full.return)
+
+#8.
+gam.pca.return <- ifelse(gam.pca.bets$prob.p1 > 0.5 & gam.pca.bets$y == 1, gam.pca.bets$odds.p1 - 1, 
+                          ifelse(gam.pca.bets$prob.p1 > 0.5 & gam.pca.bets$y == 0, -1,
+                          ifelse(gam.pca.bets$prob.p1 < 0.5 & gam.pca.bets$y == 0, gam.pca.bets$odds.p2 - 1, -1)))
+gam.pca.bets$return <- gam.pca.return
+gam.pca.profit <- sum(gam.pca.return)
+
+#9.
+rf.return <- ifelse(rf.bets$prob.p1 > 0.5 & rf.bets$y == 1, rf.bets$odds.p1 - 1, 
+                          ifelse(rf.bets$prob.p1 > 0.5 & rf.bets$y == 0, -1,
+                          ifelse(rf.bets$prob.p1 < 0.5 & rf.bets$y == 0, rf.bets$odds.p2 - 1, -1)))
+rf.bets$return <- rf.return
+rf.profit <- sum(rf.return)
+
+#10.
+full.knn.return <- ifelse(full.knn.bets$prob.p1 > 0.5 & full.knn.bets$y == 1, full.knn.bets$odds.p1 - 1, 
+                          ifelse(full.knn.bets$prob.p1 > 0.5 & full.knn.bets$y == 0, -1,
+                          ifelse(full.knn.bets$prob.p1 < 0.5 & full.knn.bets$y == 0, full.knn.bets$odds.p2 - 1, -1)))
+full.knn.bets$return <- full.knn.return
+full.knn.profit <- sum(full.knn.return)
+
+#11.
+knn.pc1.return <- ifelse(knn.pc1.bets$prob.p1 > 0.5 & knn.pc1.bets$y == 1, knn.pc1.bets$odds.p1 - 1, 
+                          ifelse(knn.pc1.bets$prob.p1 > 0.5 & knn.pc1.bets$y == 0, -1,
+                          ifelse(knn.pc1.bets$prob.p1 < 0.5 & knn.pc1.bets$y == 0, knn.pc1.bets$odds.p2 - 1, -1)))
+knn.pc1.bets$return <- knn.pc1.return
+knn.pc1.profit <- sum(knn.pc1.return)
+
+# In order 1-11
+all.winner.profit <- c(log.full.profit,log.ridge.profit,log.lasso.profit,pc1.log.profit,full.lda.profit,pc1.lda.profit,gam.full.profit,gam.pca.profit,rf.profit,full.knn.profit,knn.pc1.profit)
+
+
+##### Strategy 2: Only winners with better implied odds #####
+
+#1.
+log.full.return2 <- ifelse(full.log.bets$prob.p1 > (full.log.bets$implied.prob.p1 + 0.05) & full.log.bets$y == 1, full.log.bets$odds.p1 - 1, 
+                          ifelse(full.log.bets$prob.p1 > (full.log.bets$implied.prob.p1 + 0.05) & full.log.bets$y == 0, -1,
+                          ifelse( (1 - full.log.bets$prob.p1) > (full.log.bets$implied.prob.p2 + 0.05) & full.log.bets$y == 0, full.log.bets$odds.p2 - 1, 
+                          ifelse( (1-full.log.bets$prob.p1) > (full.log.bets$implied.prob.p2 + 0.05) & full.log.bets$y == 1, -1, 0 ))) )
+full.log.bets$return2 <- log.full.return2
+log.full.profit2 <- sum(log.full.return2)
+
+#2.
+log.ridge.return2 <- ifelse(ridge.log.bets$prob.p1 > (ridge.log.bets$implied.prob.p1 + 0.05) & ridge.log.bets$y == 1, ridge.log.bets$odds.p1 - 1, 
+                          ifelse(ridge.log.bets$prob.p1 > (ridge.log.bets$implied.prob.p1 + 0.05) & ridge.log.bets$y == 0, -1,
+                          ifelse( (1 - ridge.log.bets$prob.p1) > (ridge.log.bets$implied.prob.p2 + 0.05) & ridge.log.bets$y == 0, ridge.log.bets$odds.p2 - 1, 
+                          ifelse( (1-ridge.log.bets$prob.p1) > (ridge.log.bets$implied.prob.p2 + 0.05) & ridge.log.bets$y == 1, -1, 0 ))) )
+ridge.log.bets$return2 <- log.ridge.return2
+log.ridge.profit2 <- sum(log.ridge.return2)
+
+#3.
+log.lasso.return2 <- ifelse(lasso.log.bets$prob.p1 > (lasso.log.bets$implied.prob.p1 + 0.05) & lasso.log.bets$y == 1, lasso.log.bets$odds.p1 - 1, 
+                          ifelse(lasso.log.bets$prob.p1 > (lasso.log.bets$implied.prob.p1 + 0.05) & lasso.log.bets$y == 0, -1,
+                          ifelse( (1 - lasso.log.bets$prob.p1) > (lasso.log.bets$implied.prob.p2 + 0.05) & lasso.log.bets$y == 0, lasso.log.bets$odds.p2 - 1, 
+                          ifelse( (1-lasso.log.bets$prob.p1) > (lasso.log.bets$implied.prob.p2 + 0.05) & lasso.log.bets$y == 1, -1, 0 ))) )
+lasso.log.bets$return2 <- log.lasso.return2
+log.lasso.profit2 <- sum(log.lasso.return2)
+
+#4.
+pc1.log.return2 <- ifelse(pc1.log.bets$prob.p1 > (pc1.log.bets$implied.prob.p1 + 0.05) & pc1.log.bets$y == 1, pc1.log.bets$odds.p1 - 1, 
+                          ifelse(pc1.log.bets$prob.p1 > (pc1.log.bets$implied.prob.p1 + 0.05) & pc1.log.bets$y == 0, -1,
+                          ifelse( (1 - pc1.log.bets$prob.p1) > (pc1.log.bets$implied.prob.p2 + 0.05) & pc1.log.bets$y == 0, pc1.log.bets$odds.p2 - 1, 
+                          ifelse( (1-pc1.log.bets$prob.p1) > (pc1.log.bets$implied.prob.p2 + 0.05) & pc1.log.bets$y == 1, -1, 0 ))) )
+pc1.log.bets$return2 <- pc1.log.return2
+pc1.log.profit2 <- sum(pc1.log.return2)
+
+#5.
+full.lda.return2 <- ifelse(full.lda.bets$prob.p1 > (full.lda.bets$implied.prob.p1 + 0.05) & full.lda.bets$y == 1, full.lda.bets$odds.p1 - 1, 
+                          ifelse(full.lda.bets$prob.p1 > (full.lda.bets$implied.prob.p1 + 0.05) & full.lda.bets$y == 0, -1,
+                          ifelse( (1 - full.lda.bets$prob.p1) > (full.lda.bets$implied.prob.p2 + 0.05) & full.lda.bets$y == 0, full.lda.bets$odds.p2 - 1, 
+                          ifelse( (1-full.lda.bets$prob.p1) > (full.lda.bets$implied.prob.p2 + 0.05) & full.lda.bets$y == 1, -1, 0 ))) )
+full.lda.bets$return2 <- full.lda.return2
+full.lda.profit2 <- sum(full.lda.return2)
+
+#6.
+pc1.lda.return2 <- ifelse(pc1.lda.bets$prob.p1 > (pc1.lda.bets$implied.prob.p1 + 0.05) & pc1.lda.bets$y == 1, pc1.lda.bets$odds.p1 - 1, 
+                          ifelse(pc1.lda.bets$prob.p1 > (pc1.lda.bets$implied.prob.p1 + 0.05) & pc1.lda.bets$y == 0, -1,
+                          ifelse( (1 - pc1.lda.bets$prob.p1) > (pc1.lda.bets$implied.prob.p2 + 0.05) & pc1.lda.bets$y == 0, pc1.lda.bets$odds.p2 - 1, 
+                          ifelse( (1-pc1.lda.bets$prob.p1) > (pc1.lda.bets$implied.prob.p2 + 0.05) & pc1.lda.bets$y == 1, -1, 0 ))) )
+pc1.lda.bets$return2 <- pc1.lda.return2
+pc1.lda.profit2 <- sum(pc1.lda.return2)
+
+#7.
+gam.full.return2 <- ifelse(gam.bets$prob.p1 > (gam.bets$implied.prob.p1 + 0.05) & gam.bets$y == 1, gam.bets$odds.p1 - 1, 
+                          ifelse(gam.bets$prob.p1 > (gam.bets$implied.prob.p1 + 0.05) & gam.bets$y == 0, -1,
+                          ifelse( (1 - gam.bets$prob.p1) > (gam.bets$implied.prob.p2 + 0.05) & gam.bets$y == 0, gam.bets$odds.p2 - 1, 
+                          ifelse( (1-gam.bets$prob.p1) > (gam.bets$implied.prob.p2 + 0.05) & gam.bets$y == 1, -1, 0 ))) )
+gam.bets$return2 <- gam.full.return2
+gam.full.profit2 <- sum(gam.full.return2)
+
+#8.
+gam.pca.return2 <- ifelse(gam.pca.bets$prob.p1 > (gam.pca.bets$implied.prob.p1 + 0.05) & gam.pca.bets$y == 1, gam.pca.bets$odds.p1 - 1, 
+                          ifelse(gam.pca.bets$prob.p1 > (gam.pca.bets$implied.prob.p1 + 0.05) & gam.pca.bets$y == 0, -1,
+                          ifelse( (1 - gam.pca.bets$prob.p1) > (gam.pca.bets$implied.prob.p2 + 0.05) & gam.pca.bets$y == 0, gam.pca.bets$odds.p2 - 1, 
+                          ifelse( (1-gam.pca.bets$prob.p1) > (gam.pca.bets$implied.prob.p2 + 0.05) & gam.pca.bets$y == 1, -1, 0 ))) )
+gam.pca.bets$return2 <- gam.pca.return2
+gam.pca.profit2 <- sum(gam.pca.return2)
+
+#9.
+rf.return2 <- ifelse(rf.bets$prob.p1 > (rf.bets$implied.prob.p1 + 0.05) & rf.bets$y == 1, rf.bets$odds.p1 - 1, 
+                          ifelse(rf.bets$prob.p1 > (rf.bets$implied.prob.p1 + 0.05) & rf.bets$y == 0, -1,
+                          ifelse( (1 - rf.bets$prob.p1) > (rf.bets$implied.prob.p2 + 0.05) & rf.bets$y == 0, rf.bets$odds.p2 - 1, 
+                          ifelse( (1-rf.bets$prob.p1) > (rf.bets$implied.prob.p2 + 0.05) & rf.bets$y == 1, -1, 0 ))) )
+rf.bets$return2 <- rf.return2
+rf.profit2 <- sum(rf.return2)
+
+#10.
+full.knn.return2 <- ifelse(full.knn.bets$prob.p1 > (full.knn.bets$implied.prob.p1 + 0.05) & full.knn.bets$y == 1, full.knn.bets$odds.p1 - 1, 
+                          ifelse(full.knn.bets$prob.p1 > (full.knn.bets$implied.prob.p1 + 0.05) & full.knn.bets$y == 0, -1,
+                          ifelse( (1 - full.knn.bets$prob.p1) > (full.knn.bets$implied.prob.p2 + 0.05) & full.knn.bets$y == 0, full.knn.bets$odds.p2 - 1, 
+                          ifelse( (1-full.knn.bets$prob.p1) > (full.knn.bets$implied.prob.p2 + 0.05) & full.knn.bets$y == 1, -1, 0 ))) )
+full.knn.bets$return2 <- full.knn.return2
+full.knn.profit2 <- sum(full.knn.return2)
+
+#11.
+knn.pc1.return2 <- ifelse(knn.pc1.bets$prob.p1 > (knn.pc1.bets$implied.prob.p1 + 0.05) & knn.pc1.bets$y == 1, knn.pc1.bets$odds.p1 - 1, 
+                          ifelse(knn.pc1.bets$prob.p1 > (knn.pc1.bets$implied.prob.p1 + 0.05) & knn.pc1.bets$y == 0, -1,
+                          ifelse( (1 - knn.pc1.bets$prob.p1) > (knn.pc1.bets$implied.prob.p2 + 0.05) & knn.pc1.bets$y == 0, knn.pc1.bets$odds.p2 - 1, 
+                          ifelse( (1-knn.pc1.bets$prob.p1) > (knn.pc1.bets$implied.prob.p2 + 0.05) & knn.pc1.bets$y == 1, -1, 0 ))) )
+knn.pc1.bets$return2 <- knn.pc1.return2
+knn.pc1.profit2 <- sum(knn.pc1.return2)
+
+# In order 1-11
+all.winner.profit2 <- c(log.full.profit2,log.ridge.profit2,log.lasso.profit2,pc1.log.profit2,full.lda.profit2,pc1.lda.profit2,gam.full.profit2,gam.pca.profit2,rf.profit2,full.knn.profit2,knn.pc1.profit2)
+
+
+
+##### Strategy 3 - Kelly Criterion #####
+
+#1.
+log.full.return3 <- ifelse(full.log.bets$prob.p1 > (full.log.bets$implied.prob.p1 + 0.05) & full.log.bets$y == 1, 
+                            (full.log.bets$prob.p1*(full.log.bets$odds.p1 - 1) - (1 - full.log.bets$prob.p1)), 
+                              ifelse(full.log.bets$prob.p1 > (full.log.bets$implied.prob.p1 + 0.05)  & full.log.bets$y == 0, 
+                                 -((full.log.bets$prob.p1*(full.log.bets$odds.p1 - 1) - (1 - full.log.bets$prob.p1)) / (full.log.bets$odds.p1 - 1)),
+                                    ifelse( (1 - full.log.bets$prob.p1) > (full.log.bets$implied.prob.p2 + 0.05) & full.log.bets$y == 0, 
+                                      ((1-full.log.bets$prob.p1)*(full.log.bets$odds.p2 - 1) - (full.log.bets$prob.p1)), 
+                                        ifelse( (1-full.log.bets$prob.p1) > (full.log.bets$implied.prob.p2 + 0.05) & full.log.bets$y == 1, 
+                                          -(( (1-full.log.bets$prob.p1)*(full.log.bets$odds.p2 - 1) - (full.log.bets$prob.p1)) / (full.log.bets$odds.p2 - 1)), 0))) )
+full.log.bets$return3 <- log.full.return3
+log.full.profit3 <- sum(log.full.return3)
+
+
+#2.
+log.ridge.return3 <- ifelse(ridge.log.bets$prob.p1 > (ridge.log.bets$implied.prob.p1 + 0.05) & ridge.log.bets$y == 1, 
+                            (ridge.log.bets$prob.p1*(ridge.log.bets$odds.p1 - 1) - (1 - ridge.log.bets$prob.p1)), 
+                              ifelse(ridge.log.bets$prob.p1 > (ridge.log.bets$implied.prob.p1 + 0.05)  & ridge.log.bets$y == 0, 
+                                 -((ridge.log.bets$prob.p1*(ridge.log.bets$odds.p1 - 1) - (1 - ridge.log.bets$prob.p1)) / (ridge.log.bets$odds.p1 - 1)),
+                                    ifelse( (1 - ridge.log.bets$prob.p1) > (ridge.log.bets$implied.prob.p2 + 0.05) & ridge.log.bets$y == 0, 
+                                      ((1-ridge.log.bets$prob.p1)*(ridge.log.bets$odds.p2 - 1) - (ridge.log.bets$prob.p1)), 
+                                        ifelse( (1-ridge.log.bets$prob.p1) > (ridge.log.bets$implied.prob.p2 + 0.05) & ridge.log.bets$y == 1, 
+                                          -(( (1-ridge.log.bets$prob.p1)*(ridge.log.bets$odds.p2 - 1) - (ridge.log.bets$prob.p1)) / (ridge.log.bets$odds.p2 - 1)), 0))) )
+ridge.log.bets$return3 <- log.ridge.return3
+log.ridge.profit3 <- sum(log.ridge.return3)
+
+#3.
+log.lasso.return3 <- ifelse(lasso.log.bets$prob.p1 > (lasso.log.bets$implied.prob.p1 + 0.05) & lasso.log.bets$y == 1, 
+                            (lasso.log.bets$prob.p1*(lasso.log.bets$odds.p1 - 1) - (1 - lasso.log.bets$prob.p1)), 
+                              ifelse(lasso.log.bets$prob.p1 > (lasso.log.bets$implied.prob.p1 + 0.05)  & lasso.log.bets$y == 0, 
+                                 -((lasso.log.bets$prob.p1*(lasso.log.bets$odds.p1 - 1) - (1 - lasso.log.bets$prob.p1)) / (lasso.log.bets$odds.p1 - 1)),
+                                    ifelse( (1 - lasso.log.bets$prob.p1) > (lasso.log.bets$implied.prob.p2 + 0.05) & lasso.log.bets$y == 0, 
+                                      ((1-lasso.log.bets$prob.p1)*(lasso.log.bets$odds.p2 - 1) - (lasso.log.bets$prob.p1)), 
+                                        ifelse( (1-lasso.log.bets$prob.p1) > (lasso.log.bets$implied.prob.p2 + 0.05) & lasso.log.bets$y == 1, 
+                                          -(( (1-lasso.log.bets$prob.p1)*(lasso.log.bets$odds.p2 - 1) - (lasso.log.bets$prob.p1)) / (lasso.log.bets$odds.p2 - 1)), 0))) )
+lasso.log.bets$return3 <- log.lasso.return3
+log.lasso.profit3 <- sum(log.lasso.return3)
+
+#4.
+pc1.log.return3 <- ifelse(pc1.log.bets$prob.p1 > (pc1.log.bets$implied.prob.p1 + 0.05) & pc1.log.bets$y == 1, 
+                            (pc1.log.bets$prob.p1*(pc1.log.bets$odds.p1 - 1) - (1 - pc1.log.bets$prob.p1)), 
+                              ifelse(pc1.log.bets$prob.p1 > (pc1.log.bets$implied.prob.p1 + 0.05)  & pc1.log.bets$y == 0, 
+                                 -((pc1.log.bets$prob.p1*(pc1.log.bets$odds.p1 - 1) - (1 - pc1.log.bets$prob.p1)) / (pc1.log.bets$odds.p1 - 1)),
+                                    ifelse( (1 - pc1.log.bets$prob.p1) > (pc1.log.bets$implied.prob.p2 + 0.05) & pc1.log.bets$y == 0, 
+                                      ((1-pc1.log.bets$prob.p1)*(pc1.log.bets$odds.p2 - 1) - (pc1.log.bets$prob.p1)), 
+                                        ifelse( (1-pc1.log.bets$prob.p1) > (pc1.log.bets$implied.prob.p2 + 0.05) & pc1.log.bets$y == 1, 
+                                          -(( (1-pc1.log.bets$prob.p1)*(pc1.log.bets$odds.p2 - 1) - (pc1.log.bets$prob.p1)) / (pc1.log.bets$odds.p2 - 1)), 0))) )
+pc1.log.bets$return3 <- pc1.log.return3
+pc1.log.profit3 <- sum(pc1.log.return3)
+
+#5.
+full.lda.return3 <- ifelse(full.lda.bets$prob.p1 > (full.lda.bets$implied.prob.p1 + 0.05) & full.lda.bets$y == 1, 
+                            (full.lda.bets$prob.p1*(full.lda.bets$odds.p1 - 1) - (1 - full.lda.bets$prob.p1)), 
+                              ifelse(full.lda.bets$prob.p1 > (full.lda.bets$implied.prob.p1 + 0.05)  & full.lda.bets$y == 0, 
+                                 -((full.lda.bets$prob.p1*(full.lda.bets$odds.p1 - 1) - (1 - full.lda.bets$prob.p1)) / (full.lda.bets$odds.p1 - 1)),
+                                    ifelse( (1 - full.lda.bets$prob.p1) > (full.lda.bets$implied.prob.p2 + 0.05) & full.lda.bets$y == 0, 
+                                      ((1-full.lda.bets$prob.p1)*(full.lda.bets$odds.p2 - 1) - (full.lda.bets$prob.p1)), 
+                                        ifelse( (1-full.lda.bets$prob.p1) > (full.lda.bets$implied.prob.p2 + 0.05) & full.lda.bets$y == 1, 
+                                          -(( (1-full.lda.bets$prob.p1)*(full.lda.bets$odds.p2 - 1) - (full.lda.bets$prob.p1)) / (full.lda.bets$odds.p2 - 1)), 0))) )
+full.lda.bets$return3 <- full.lda.return3
+full.lda.profit3 <- sum(full.lda.return3)
+
+#6.
+pc1.lda.return3 <- ifelse(pc1.lda.bets$prob.p1 > (pc1.lda.bets$implied.prob.p1 + 0.05) & pc1.lda.bets$y == 1, 
+                            (pc1.lda.bets$prob.p1*(pc1.lda.bets$odds.p1 - 1) - (1 - pc1.lda.bets$prob.p1)), 
+                              ifelse(pc1.lda.bets$prob.p1 > (pc1.lda.bets$implied.prob.p1 + 0.05)  & pc1.lda.bets$y == 0, 
+                                 -((pc1.lda.bets$prob.p1*(pc1.lda.bets$odds.p1 - 1) - (1 - pc1.lda.bets$prob.p1)) / (pc1.lda.bets$odds.p1 - 1)),
+                                    ifelse( (1 - pc1.lda.bets$prob.p1) > (pc1.lda.bets$implied.prob.p2 + 0.05) & pc1.lda.bets$y == 0, 
+                                      ((1-pc1.lda.bets$prob.p1)*(pc1.lda.bets$odds.p2 - 1) - (pc1.lda.bets$prob.p1)), 
+                                        ifelse( (1-pc1.lda.bets$prob.p1) > (pc1.lda.bets$implied.prob.p2 + 0.05) & pc1.lda.bets$y == 1, 
+                                          -(( (1-pc1.lda.bets$prob.p1)*(pc1.lda.bets$odds.p2 - 1) - (pc1.lda.bets$prob.p1)) / (pc1.lda.bets$odds.p2 - 1)), 0))) )
+pc1.lda.bets$return3 <- pc1.lda.return3
+pc1.lda.profit3 <- sum(pc1.lda.return3)
+
+#7.
+gam.full.return3 <- ifelse(gam.bets$prob.p1 > (gam.bets$implied.prob.p1 + 0.05) & gam.bets$y == 1, 
+                            (gam.bets$prob.p1*(gam.bets$odds.p1 - 1) - (1 - gam.bets$prob.p1)), 
+                              ifelse(gam.bets$prob.p1 > (gam.bets$implied.prob.p1 + 0.05)  & gam.bets$y == 0, 
+                                 -((gam.bets$prob.p1*(gam.bets$odds.p1 - 1) - (1 - gam.bets$prob.p1)) / (gam.bets$odds.p1 - 1)),
+                                    ifelse( (1 - gam.bets$prob.p1) > (gam.bets$implied.prob.p2 + 0.05) & gam.bets$y == 0, 
+                                      ((1-gam.bets$prob.p1)*(gam.bets$odds.p2 - 1) - (gam.bets$prob.p1)), 
+                                        ifelse( (1-gam.bets$prob.p1) > (gam.bets$implied.prob.p2 + 0.05) & gam.bets$y == 1, 
+                                          -(( (1-gam.bets$prob.p1)*(gam.bets$odds.p2 - 1) - (gam.bets$prob.p1)) / (gam.bets$odds.p2 - 1)), 0))) )
+gam.bets$return3 <- gam.full.return3
+gam.full.profit3 <- sum(gam.full.return3)
+
+#8.
+gam.pca.return3 <- ifelse(gam.pca.bets$prob.p1 > (gam.pca.bets$implied.prob.p1 + 0.05) & gam.pca.bets$y == 1, 
+                            (gam.pca.bets$prob.p1*(gam.pca.bets$odds.p1 - 1) - (1 - gam.pca.bets$prob.p1)), 
+                              ifelse(gam.pca.bets$prob.p1 > (gam.pca.bets$implied.prob.p1 + 0.05)  & gam.pca.bets$y == 0, 
+                                 -((gam.pca.bets$prob.p1*(gam.pca.bets$odds.p1 - 1) - (1 - gam.pca.bets$prob.p1)) / (gam.pca.bets$odds.p1 - 1)),
+                                    ifelse( (1 - gam.pca.bets$prob.p1) > (gam.pca.bets$implied.prob.p2 + 0.05) & gam.pca.bets$y == 0, 
+                                      ((1-gam.pca.bets$prob.p1)*(gam.pca.bets$odds.p2 - 1) - (gam.pca.bets$prob.p1)), 
+                                        ifelse( (1-gam.pca.bets$prob.p1) > (gam.pca.bets$implied.prob.p2 + 0.05) & gam.pca.bets$y == 1, 
+                                          -(( (1-gam.pca.bets$prob.p1)*(gam.pca.bets$odds.p2 - 1) - (gam.pca.bets$prob.p1)) / (gam.pca.bets$odds.p2 - 1)), 0))) )
+gam.pca.bets$return3 <- gam.pca.return3
+gam.pca.profit3 <- sum(gam.pca.return3)
+
+#9.
+rf.return3 <- ifelse(rf.bets$prob.p1 > (rf.bets$implied.prob.p1 + 0.05) & rf.bets$y == 1, 
+                            (rf.bets$prob.p1*(rf.bets$odds.p1 - 1) - (1 - rf.bets$prob.p1)), 
+                              ifelse(rf.bets$prob.p1 > (rf.bets$implied.prob.p1 + 0.05)  & rf.bets$y == 0, 
+                                 -((rf.bets$prob.p1*(rf.bets$odds.p1 - 1) - (1 - rf.bets$prob.p1)) / (rf.bets$odds.p1 - 1)),
+                                    ifelse( (1 - rf.bets$prob.p1) > (rf.bets$implied.prob.p2 + 0.05) & rf.bets$y == 0, 
+                                      ((1-rf.bets$prob.p1)*(rf.bets$odds.p2 - 1) - (rf.bets$prob.p1)), 
+                                        ifelse( (1-rf.bets$prob.p1) > (rf.bets$implied.prob.p2 + 0.05) & rf.bets$y == 1, 
+                                          -(( (1-rf.bets$prob.p1)*(rf.bets$odds.p2 - 1) - (rf.bets$prob.p1)) / (rf.bets$odds.p2 - 1)), 0))) )
+rf.bets$return3 <- rf.return3
+rf.profit3 <- sum(rf.return3)
+
+#10.
+full.knn.return3 <- ifelse(full.knn.bets$prob.p1 > (full.knn.bets$implied.prob.p1 + 0.05) & full.knn.bets$y == 1, 
+                            (full.knn.bets$prob.p1*(full.knn.bets$odds.p1 - 1) - (1 - full.knn.bets$prob.p1)), 
+                              ifelse(full.knn.bets$prob.p1 > (full.knn.bets$implied.prob.p1 + 0.05)  & full.knn.bets$y == 0, 
+                                 -((full.knn.bets$prob.p1*(full.knn.bets$odds.p1 - 1) - (1 - full.knn.bets$prob.p1)) / (full.knn.bets$odds.p1 - 1)),
+                                    ifelse( (1 - full.knn.bets$prob.p1) > (full.knn.bets$implied.prob.p2 + 0.05) & full.knn.bets$y == 0, 
+                                      ((1-full.knn.bets$prob.p1)*(full.knn.bets$odds.p2 - 1) - (full.knn.bets$prob.p1)), 
+                                        ifelse( (1-full.knn.bets$prob.p1) > (full.knn.bets$implied.prob.p2 + 0.05) & full.knn.bets$y == 1, 
+                                          -(( (1-full.knn.bets$prob.p1)*(full.knn.bets$odds.p2 - 1) - (full.knn.bets$prob.p1)) / (full.knn.bets$odds.p2 - 1)), 0))) )
+full.knn.bets$return3 <- full.knn.return3
+full.knn.profit3 <- sum(full.knn.return3)
+
+#11.
+knn.pc1.return3 <- ifelse(knn.pc1.bets$prob.p1 > (knn.pc1.bets$implied.prob.p1 + 0.05) & knn.pc1.bets$y == 1, 
+                            (knn.pc1.bets$prob.p1*(knn.pc1.bets$odds.p1 - 1) - (1 - knn.pc1.bets$prob.p1)), 
+                              ifelse(knn.pc1.bets$prob.p1 > (knn.pc1.bets$implied.prob.p1 + 0.05)  & knn.pc1.bets$y == 0, 
+                                 -((knn.pc1.bets$prob.p1*(knn.pc1.bets$odds.p1 - 1) - (1 - knn.pc1.bets$prob.p1)) / (knn.pc1.bets$odds.p1 - 1)),
+                                    ifelse( (1 - knn.pc1.bets$prob.p1) > (knn.pc1.bets$implied.prob.p2 + 0.05) & knn.pc1.bets$y == 0, 
+                                      ((1-knn.pc1.bets$prob.p1)*(knn.pc1.bets$odds.p2 - 1) - (knn.pc1.bets$prob.p1)), 
+                                        ifelse( (1-knn.pc1.bets$prob.p1) > (knn.pc1.bets$implied.prob.p2 + 0.05) & knn.pc1.bets$y == 1, 
+                                          -(( (1-knn.pc1.bets$prob.p1)*(knn.pc1.bets$odds.p2 - 1) - (knn.pc1.bets$prob.p1)) / (knn.pc1.bets$odds.p2 - 1)), 0))) )
+knn.pc1.bets$return3 <- knn.pc1.return3
+knn.pc1.profit3 <- sum(knn.pc1.return3)
+
+# In order 1-11
+all.winner.profit3 <- c(log.full.profit3,log.ridge.profit3,log.lasso.profit3,pc1.log.profit3,full.lda.profit3,pc1.lda.profit3,gam.full.profit3,gam.pca.profit3,rf.profit3,full.knn.profit3,knn.pc1.profit3)
+```
+
+
+The table below highlights the ROI on each model under each respective class and betting strategy. ROI is calculated as $\text{ROI} = \frac{\text{Return - Investment }}{\text{Investment}}*100\%$
+
+```{r table.bets.roi}
+##### Class 1 #####
+
+# Strategy 1 - investment is easy -> $158 for each! (2 decimal places round)
+roi.strategy1 <- (all.winner.profit/158)*100
+# round(roi.strategy1,2)
+
+# Strategy 2 
+investment2.log.full <- 158 - sum(full.log.bets$return2 == 0)
+investment2.log.ridge <- 158 - sum(ridge.log.bets$return2 == 0)
+investment2.log.lasso <- 158 - sum(lasso.log.bets$return2 == 0)
+investment2.log.pc1 <- 158 - sum(pc1.log.bets$return2 == 0)
+investment2.lda.full <- 158 - sum(full.lda.bets$return2 == 0)
+investment2.lda.pc1 <- 158 - sum(pc1.lda.bets$return2 == 0)
+investment2.gam.full <- 158 - sum(gam.bets$return2 == 0)
+investment2.gam.pc1 <- 158 - sum(gam.pca.bets$return2 == 0)
+investment2.rf <- 158 - sum(rf.bets$return2 == 0)
+investment2.knn.full <- 158 - sum(full.knn.bets$return2 == 0)
+investment2.knn.pc1 <- 158 - sum(knn.pc1.bets$return2 == 0)
+investment2 <- c(investment2.log.full,investment2.log.ridge,investment2.log.lasso,investment2.log.pc1,investment2.lda.full,investment2.lda.pc1,investment2.gam.full,investment2.gam.pc1,investment2.rf,investment2.knn.full,investment2.knn.pc1)
+
+roi.strategy2 <- (all.winner.profit2/investment2)*100
+# round(roi.strategy2,2)
+
+# Strategy 3
+investment3.log.full <- sum(ifelse(full.log.bets$return3 < 0,abs(full.log.bets$return3),
+                               ifelse(full.log.bets$return3 > 0 & full.log.bets$y == 0, full.log.bets$return3 / (full.log.bets$odds.p2-1),
+                                      ifelse(full.log.bets$return3 > 0 & full.log.bets$y == 1, full.log.bets$return3 / (full.log.bets$odds.p1-1),0))))
+investment3.log.ridge <- sum(ifelse(ridge.log.bets$return3 < 0,abs(ridge.log.bets$return3),
+                               ifelse(ridge.log.bets$return3 > 0 & ridge.log.bets$y == 0, ridge.log.bets$return3 / (ridge.log.bets$odds.p2-1),
+                                      ifelse(ridge.log.bets$return3 > 0 & ridge.log.bets$y == 1, ridge.log.bets$return3 / (ridge.log.bets$odds.p1-1),0))))
+investment3.log.lasso <- sum(ifelse(lasso.log.bets$return3 < 0,abs(lasso.log.bets$return3),
+                               ifelse(lasso.log.bets$return3 > 0 & lasso.log.bets$y == 0, lasso.log.bets$return3 / (lasso.log.bets$odds.p2-1),
+                                      ifelse(lasso.log.bets$return3 > 0 & lasso.log.bets$y == 1, lasso.log.bets$return3 / (lasso.log.bets$odds.p1-1),0))))
+investment3.log.pc1 <- sum(ifelse(pc1.log.bets$return3 < 0,abs(pc1.log.bets$return3),
+                               ifelse(pc1.log.bets$return3 > 0 & pc1.log.bets$y == 0, pc1.log.bets$return3 / (pc1.log.bets$odds.p2-1),
+                                      ifelse(pc1.log.bets$return3 > 0 & pc1.log.bets$y == 1, pc1.log.bets$return3 / (pc1.log.bets$odds.p1-1),0))))
+investment3.lda.full <- sum(ifelse(full.lda.bets$return3 < 0,abs(full.lda.bets$return3),
+                               ifelse(full.lda.bets$return3 > 0 & full.lda.bets$y == 0, full.lda.bets$return3 / (full.lda.bets$odds.p2-1),
+                                      ifelse(full.lda.bets$return3 > 0 & full.lda.bets$y == 1, full.lda.bets$return3 / (full.lda.bets$odds.p1-1),0))))
+investment3.lda.pc1 <- sum(ifelse(pc1.lda.bets$return3 < 0,abs(pc1.lda.bets$return3),
+                               ifelse(pc1.lda.bets$return3 > 0 & pc1.lda.bets$y == 0, pc1.lda.bets$return3 / (pc1.lda.bets$odds.p2-1),
+                                      ifelse(pc1.lda.bets$return3 > 0 & pc1.lda.bets$y == 1, pc1.lda.bets$return3 / (pc1.lda.bets$odds.p1-1),0))))
+investment3.gam.full <- sum(ifelse(gam.bets$return3 < 0,abs(gam.bets$return3),
+                               ifelse(gam.bets$return3 > 0 & gam.bets$y == 0, gam.bets$return3 / (gam.bets$odds.p2-1),
+                                      ifelse(gam.bets$return3 > 0 & gam.bets$y == 1, gam.bets$return3 / (gam.bets$odds.p1-1),0))))
+investment3.gam.pc1 <- sum(ifelse(gam.pca.bets$return3 < 0,abs(gam.pca.bets$return3),
+                               ifelse(gam.pca.bets$return3 > 0 & gam.pca.bets$y == 0, gam.pca.bets$return3 / (gam.pca.bets$odds.p2-1),
+                                      ifelse(gam.pca.bets$return3 > 0 & gam.pca.bets$y == 1, gam.pca.bets$return3 / (gam.pca.bets$odds.p1-1),0))))
+investment3.rf <- sum(ifelse(rf.bets$return3 < 0,abs(rf.bets$return3),
+                               ifelse(rf.bets$return3 > 0 & rf.bets$y == 0, rf.bets$return3 / (rf.bets$odds.p2-1),
+                                      ifelse(rf.bets$return3 > 0 & rf.bets$y == 1, rf.bets$return3 / (rf.bets$odds.p1-1),0))))
+investment3.knn.full <- sum(ifelse(full.knn.bets$return3 < 0,abs(full.knn.bets$return3),
+                               ifelse(full.knn.bets$return3 > 0 & full.knn.bets$y == 0, full.knn.bets$return3 / (full.knn.bets$odds.p2-1),
+                                      ifelse(full.knn.bets$return3 > 0 & full.knn.bets$y == 1, full.knn.bets$return3 / (full.knn.bets$odds.p1-1),0))))
+investment3.knn.pc1 <- sum(ifelse(knn.pc1.bets$return3 < 0,abs(knn.pc1.bets$return3),
+                               ifelse(knn.pc1.bets$return3 > 0 & knn.pc1.bets$y == 0, knn.pc1.bets$return3 / (knn.pc1.bets$odds.p2-1),
+                                      ifelse(knn.pc1.bets$return3 > 0 & knn.pc1.bets$y == 1, knn.pc1.bets$return3 / (knn.pc1.bets$odds.p1-1),0))))
+investment3 <- c(investment3.log.full,investment3.log.ridge,investment3.log.lasso,investment3.log.pc1,investment3.lda.full,investment3.lda.pc1,investment3.gam.full,investment3.gam.pc1,investment3.rf,investment3.knn.full,investment3.knn.pc1)
+
+roi.strategy3 <- (all.winner.profit3/investment3)*100
+# round(roi.strategy3,2)
+```
+
+```{r bet.results.class2}
+###### Class 2 - Betting Results ######
+  # NOTE: 'c' = $1 per bet for ALL strategies
+
+# First, change all datasets to only contain matches where both players have AT LEAST 5 matches
+full_train_all <- rbind.data.frame(tennis_train_final,tennis_validate_final)
+
+# Get counts of players
+train_matches_players1 <- full_train_all %>%
+                              group_by(First1,Last1) %>%
+                                summarize(matches = n())
+train_matches_players2 <- full_train_all %>%
+                              group_by(First2,Last2) %>%
+                                summarize(matches = n())
+
+# Add pieces together for total matches for each player 
+colnames(train_matches_players2)[1:2] <- c("First1","Last1")
+
+train.matches.both <- sqldf("SELECT * FROM train_matches_players1 
+                            LEFT JOIN train_matches_players2 
+                            USING (First1, Last1)")
+train.matches.both.final <- transform(train.matches.both, tot.matches = rowSums(train.matches.both[,3:4],na.rm = TRUE))
+
+# Final match counts by player
+train.matches.both.final <- train.matches.both.final[,-c(3:4)]
+
+# Record players with 5+ matches
+class2.players <- train.matches.both.final[train.matches.both.final$tot.matches > 4,]
+
+class2.players.names <- paste0(class2.players$First1,class2.players$Last1)
+
+# Now retain only matches in test dataset that have BOTH players in class2.players.names
+
+test.names <- tennis_test_final[,3:6]
+test.names$Player1 <- paste0(test.names$First1,test.names$Last1)
+test.names$Player2 <- paste0(test.names$First2,test.names$Last2)
+player1.found <- test.names$Player1 %in% class2.players.names
+player2.found <- test.names$Player2 %in% class2.players.names
+matches.keep.test <- player1.found == TRUE & player2.found == TRUE
+
+
+#### Strategy One - All Winners ####
+
+#1.
+full.log.bets$return <- log.full.return
+log.full.profit <- sum(log.full.return[matches.keep.test])
+
+#2.
+ridge.log.bets$return <- log.ridge.return
+log.ridge.profit <- sum(log.ridge.return[matches.keep.test])
+
+#3.
+lasso.log.bets$return <- log.lasso.return
+log.lasso.profit <- sum(log.lasso.return[matches.keep.test])
+
+#4.
+pc1.log.bets$return <- pc1.log.return
+pc1.log.profit <- sum(pc1.log.return[matches.keep.test])
+
+#5.
+full.lda.bets$return <- full.lda.return
+full.lda.profit <- sum(full.lda.return[matches.keep.test])
+
+#6.
+pc1.lda.bets$return <- pc1.lda.return
+pc1.lda.profit <- sum(pc1.lda.return[matches.keep.test])
+
+#7.
+gam.bets$return <- gam.full.return
+gam.full.profit <- sum(gam.full.return[matches.keep.test])
+
+#8.
+gam.pca.bets$return <- gam.pca.return
+gam.pca.profit <- sum(gam.pca.return[matches.keep.test])
+
+#9.
+rf.bets$return <- rf.return
+rf.profit <- sum(rf.return[matches.keep.test])
+
+#10.
+full.knn.bets$return <- full.knn.return
+full.knn.profit <- sum(full.knn.return[matches.keep.test])
+
+#11.
+knn.pc1.bets$return <- knn.pc1.return
+knn.pc1.profit <- sum(knn.pc1.return[matches.keep.test])
+
+# In order 1-11
+all.winner.profit <- c(log.full.profit,log.ridge.profit,log.lasso.profit,pc1.log.profit,full.lda.profit,pc1.lda.profit,gam.full.profit,gam.pca.profit,rf.profit,full.knn.profit,knn.pc1.profit)
+
+
+##### Strategy 2: Only winners with better implied odds #####
+
+#1.
+full.log.bets$return2 <- log.full.return2
+log.full.profit2 <- sum(log.full.return2[matches.keep.test])
+
+#2.
+ridge.log.bets$return2 <- log.ridge.return2
+log.ridge.profit2 <- sum(log.ridge.return2[matches.keep.test])
+
+#3.
+lasso.log.bets$return2 <- log.lasso.return2
+log.lasso.profit2 <- sum(log.lasso.return2[matches.keep.test])
+
+#4.
+pc1.log.bets$return2 <- pc1.log.return2
+pc1.log.profit2 <- sum(pc1.log.return2[matches.keep.test])
+
+#5.
+full.lda.bets$return2 <- full.lda.return2
+full.lda.profit2 <- sum(full.lda.return2[matches.keep.test])
+
+#6.
+pc1.lda.bets$return2 <- pc1.lda.return2
+pc1.lda.profit2 <- sum(pc1.lda.return2[matches.keep.test])
+
+#7.
+gam.bets$return2 <- gam.full.return2
+gam.full.profit2 <- sum(gam.full.return2[matches.keep.test])
+
+#8.
+gam.pca.bets$return2 <- gam.pca.return2
+gam.pca.profit2 <- sum(gam.pca.return2[matches.keep.test])
+
+#9.
+rf.bets$return2 <- rf.return2
+rf.profit2 <- sum(rf.return2[matches.keep.test])
+
+#10.
+full.knn.bets$return2 <- full.knn.return2
+full.knn.profit2 <- sum(full.knn.return2[matches.keep.test])
+
+#11.
+knn.pc1.bets$return2 <- knn.pc1.return2
+knn.pc1.profit2 <- sum(knn.pc1.return2[matches.keep.test])
+
+# In order 1-11
+all.winner.profit2 <- c(log.full.profit2,log.ridge.profit2,log.lasso.profit2,pc1.log.profit2,full.lda.profit2,pc1.lda.profit2,gam.full.profit2,gam.pca.profit2,rf.profit2,full.knn.profit2,knn.pc1.profit2)
+
+
+
+##### Strategy 3 - Kelly Criterion #####
+
+#1.
+full.log.bets$return3 <- log.full.return3
+log.full.profit3 <- sum(log.full.return3[matches.keep.test])
+
+
+#2.
+ridge.log.bets$return3 <- log.ridge.return3
+log.ridge.profit3 <- sum(log.ridge.return3[matches.keep.test])
+
+#3.
+lasso.log.bets$return3 <- log.lasso.return3
+log.lasso.profit3 <- sum(log.lasso.return3[matches.keep.test])
+
+#4.
+pc1.log.bets$return3 <- pc1.log.return3
+pc1.log.profit3 <- sum(pc1.log.return3[matches.keep.test])
+
+#5.
+full.lda.bets$return3 <- full.lda.return3
+full.lda.profit3 <- sum(full.lda.return3[matches.keep.test])
+
+#6.
+pc1.lda.bets$return3 <- pc1.lda.return3
+pc1.lda.profit3 <- sum(pc1.lda.return3[matches.keep.test])
+
+#7.
+gam.bets$return3 <- gam.full.return3
+gam.full.profit3 <- sum(gam.full.return3[matches.keep.test])
+
+#8.
+gam.pca.bets$return3 <- gam.pca.return3
+gam.pca.profit3 <- sum(gam.pca.return3[matches.keep.test])
+
+#9.
+rf.bets$return3 <- rf.return3
+rf.profit3 <- sum(rf.return3[matches.keep.test])
+
+#10.
+full.knn.bets$return3 <- full.knn.return3
+full.knn.profit3 <- sum(full.knn.return3[matches.keep.test])
+
+#11.
+knn.pc1.bets$return3 <- knn.pc1.return3
+knn.pc1.profit3 <- sum(knn.pc1.return3[matches.keep.test])
+
+# In order 1-11
+all.winner.profit3 <- c(log.full.profit3,log.ridge.profit3,log.lasso.profit3,pc1.log.profit3,full.lda.profit3,pc1.lda.profit3,gam.full.profit3,gam.pca.profit3,rf.profit3,full.knn.profit3,knn.pc1.profit3)
+
+# all.winner.profit
+# all.winner.profit2
+# all.winner.profit3
+```
+
+```{r table.bets.roi.class2}
+##### Class 2 #####
+# sum(matches.keep.test) - 119 matches
+# Strategy 1 - investment is easy -> $119 for each! (2 decimal places round)
+roi.strategy1 <- (all.winner.profit/119)*100
+# round(roi.strategy1,2)
+
+# Strategy 2 
+investment2.log.full <- 119 - sum(full.log.bets$return2[matches.keep.test] == 0)
+investment2.log.ridge <- 119 - sum(ridge.log.bets$return2[matches.keep.test] == 0)
+investment2.log.lasso <- 119 - sum(lasso.log.bets$return2[matches.keep.test] == 0)
+investment2.log.pc1 <- 119 - sum(pc1.log.bets$return2[matches.keep.test] == 0)
+investment2.lda.full <- 119 - sum(full.lda.bets$return2[matches.keep.test] == 0)
+investment2.lda.pc1 <- 119 - sum(pc1.lda.bets$return2[matches.keep.test] == 0)
+investment2.gam.full <- 119 - sum(gam.bets$return2[matches.keep.test] == 0)
+investment2.gam.pc1 <- 119 - sum(gam.pca.bets$return2[matches.keep.test] == 0)
+investment2.rf <- 119 - sum(rf.bets$return2[matches.keep.test] == 0)
+investment2.knn.full <- 119 - sum(full.knn.bets$return2[matches.keep.test] == 0)
+investment2.knn.pc1 <- 119 - sum(knn.pc1.bets$return2[matches.keep.test] == 0)
+investment2 <- c(investment2.log.full,investment2.log.ridge,investment2.log.lasso,investment2.log.pc1,investment2.lda.full,investment2.lda.pc1,investment2.gam.full,investment2.gam.pc1,investment2.rf,investment2.knn.full,investment2.knn.pc1)
+
+roi.strategy2 <- (all.winner.profit2/investment2)*100
+# round(roi.strategy2,2)
+
+# Strategy 3
+investment3.log.full <- sum(ifelse(full.log.bets$return3[matches.keep.test] < 0,abs(full.log.bets$return3[matches.keep.test]),
+                               ifelse(full.log.bets$return3[matches.keep.test] > 0 & full.log.bets$y[matches.keep.test] == 0,           
+                                      full.log.bets$return3[matches.keep.test] / (full.log.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(full.log.bets$return3[matches.keep.test] > 0 & full.log.bets$y[matches.keep.test] == 1, 
+                                             full.log.bets$return3[matches.keep.test] / (full.log.bets$odds.p1[matches.keep.test]-1),0))))
+
+
+investment3.log.ridge <- sum(ifelse(ridge.log.bets$return3[matches.keep.test] < 0,abs(ridge.log.bets$return3[matches.keep.test]),
+                               ifelse(ridge.log.bets$return3[matches.keep.test] > 0 & ridge.log.bets$y[matches.keep.test] == 0, 
+                                      ridge.log.bets$return3[matches.keep.test] / (ridge.log.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(ridge.log.bets$return3[matches.keep.test] > 0 & ridge.log.bets$y[matches.keep.test] == 1, 
+                                             ridge.log.bets$return3[matches.keep.test] / (ridge.log.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3.log.lasso <- sum(ifelse(lasso.log.bets$return3[matches.keep.test] < 0,abs(lasso.log.bets$return3[matches.keep.test]),
+                               ifelse(lasso.log.bets$return3[matches.keep.test] > 0 & lasso.log.bets$y[matches.keep.test] == 0, 
+                                      lasso.log.bets$return3[matches.keep.test] / (lasso.log.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(lasso.log.bets$return3[matches.keep.test] > 0 & lasso.log.bets$y[matches.keep.test] == 1, 
+                                             lasso.log.bets$return3[matches.keep.test] / (lasso.log.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3.log.pc1 <- sum(ifelse(pc1.log.bets$return3[matches.keep.test] < 0,abs(pc1.log.bets$return3[matches.keep.test]),
+                               ifelse(pc1.log.bets$return3[matches.keep.test] > 0 & pc1.log.bets$y[matches.keep.test] == 0, 
+                                      pc1.log.bets$return3[matches.keep.test] / (pc1.log.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(pc1.log.bets$return3[matches.keep.test] > 0 & pc1.log.bets$y[matches.keep.test] == 1, 
+                                             pc1.log.bets$return3[matches.keep.test] / (pc1.log.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3.lda.full <- sum(ifelse(full.lda.bets$return3[matches.keep.test] < 0,abs(full.lda.bets$return3[matches.keep.test]),
+                               ifelse(full.lda.bets$return3[matches.keep.test] > 0 & full.lda.bets$y[matches.keep.test] == 0, 
+                                      full.lda.bets$return3[matches.keep.test] / (full.lda.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(full.lda.bets$return3[matches.keep.test] > 0 & full.lda.bets$y[matches.keep.test] == 1, 
+                                             full.lda.bets$return3[matches.keep.test] / (full.lda.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3.lda.pc1 <- sum(ifelse(pc1.lda.bets$return3[matches.keep.test] < 0,abs(pc1.lda.bets$return3[matches.keep.test]),
+                               ifelse(pc1.lda.bets$return3[matches.keep.test] > 0 & pc1.lda.bets$y[matches.keep.test] == 0, 
+                                      pc1.lda.bets$return3[matches.keep.test] / (pc1.lda.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(pc1.lda.bets$return3[matches.keep.test] > 0 & pc1.lda.bets$y[matches.keep.test] == 1, 
+                                             pc1.lda.bets$return3[matches.keep.test] / (pc1.lda.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3.gam.full <- sum(ifelse(gam.bets$return3[matches.keep.test] < 0,abs(gam.bets$return3[matches.keep.test]),
+                               ifelse(gam.bets$return3[matches.keep.test] > 0 & gam.bets$y[matches.keep.test] == 0, 
+                                      gam.bets$return3[matches.keep.test] / (gam.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(gam.bets$return3[matches.keep.test] > 0 & gam.bets$y[matches.keep.test] == 1, 
+                                             gam.bets$return3[matches.keep.test] / (gam.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3.gam.pc1 <- sum(ifelse(gam.pca.bets$return3[matches.keep.test] < 0,abs(gam.pca.bets$return3[matches.keep.test]),
+                               ifelse(gam.pca.bets$return3[matches.keep.test] > 0 & gam.pca.bets$y[matches.keep.test] == 0, 
+                                      gam.pca.bets$return3[matches.keep.test] / (gam.pca.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(gam.pca.bets$return3[matches.keep.test] > 0 & gam.pca.bets$y[matches.keep.test] == 1, 
+                                             gam.pca.bets$return3[matches.keep.test] / (gam.pca.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3.rf <- sum(ifelse(rf.bets$return3[matches.keep.test] < 0,abs(rf.bets$return3[matches.keep.test]),
+                               ifelse(rf.bets$return3[matches.keep.test] > 0 & rf.bets$y[matches.keep.test] == 0, 
+                                      rf.bets$return3[matches.keep.test] / (rf.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(rf.bets$return3[matches.keep.test] > 0 & rf.bets$y[matches.keep.test] == 1, 
+                                             rf.bets$return3[matches.keep.test] / (rf.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3.knn.full <- sum(ifelse(full.knn.bets$return3[matches.keep.test] < 0,abs(full.knn.bets$return3[matches.keep.test]),
+                               ifelse(full.knn.bets$return3[matches.keep.test] > 0 & full.knn.bets$y[matches.keep.test] == 0, 
+                                      full.knn.bets$return3[matches.keep.test] / (full.knn.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(full.knn.bets$return3[matches.keep.test] > 0 & full.knn.bets$y[matches.keep.test] == 1, 
+                                             full.knn.bets$return3[matches.keep.test] / (full.knn.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3.knn.pc1 <- sum(ifelse(knn.pc1.bets$return3[matches.keep.test] < 0,abs(knn.pc1.bets$return3[matches.keep.test]),
+                               ifelse(knn.pc1.bets$return3[matches.keep.test] > 0 & knn.pc1.bets$y[matches.keep.test] == 0, 
+                                      knn.pc1.bets$return3[matches.keep.test] / (knn.pc1.bets$odds.p2[matches.keep.test]-1),
+                                      ifelse(knn.pc1.bets$return3[matches.keep.test] > 0 & knn.pc1.bets$y[matches.keep.test] == 1, 
+                                             knn.pc1.bets$return3[matches.keep.test] / (knn.pc1.bets$odds.p1[matches.keep.test]-1),0))))
+
+investment3 <- c(investment3.log.full,investment3.log.ridge,investment3.log.lasso,investment3.log.pc1,investment3.lda.full,investment3.lda.pc1,investment3.gam.full,investment3.gam.pc1,investment3.rf,investment3.knn.full,investment3.knn.pc1)
+
+roi.strategy3 <- (all.winner.profit3/investment3)*100
+# round(roi.strategy3,2)
+```
+
+The three best and worst models by overall ROI across each class and strategy are denoted in red and green highlighting in Table 3 below. Despite having the lowest test error rate, KNN does not appear to be the best models in providing the highest ROI across the three betting strategies and two different classes. Additionally, it appears that the "Edge" strategy (2) yielded the best results almost completely across all model and class types. Nearly every model resulted in a positive ROI under strategy (2) and Class (2). Intriguingly the Random Forest and Logistic Regression models appear the best when examined on the whole, and the Logistic Regression model under the "Edge" strategy for Class (2) returned the highest ROI at 14%. Astonishingly, the "Kelly" strategy performed much worse than expected across nearly all models. Finally, there was a nearly unanimous improvement across all models and strategies when only placing bets on players with at least $\pmb{5+}$ matches in the training dataset, i.e. Class (2). While not completely surprising, the consistency and noticeable improvement regardless of model given the fairly moderately sized test dataset is of particular note. 
+
+
+\begin{table}[t]
+\centering
+\footnotesize
+\caption{Betting Returns Summary}
+\begin{minipage}{.45\textwidth}
+\begin{tabular}{cccc}
+\hline
+Model                                                                       & Class                 & Strategy & ROI                           \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -3.38                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 5.28}   \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -5.42                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -0.29                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 14.00}  \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{009901} Logistic}}}      & \multirow{-3}{*}{(2)} & Kelly    & {\color[HTML]{009901} 4.55}  \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -9.08                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -9.51                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -7.82                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -8.03                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -9.05                         \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{CB0000} Ridge}}}         & \multirow{-3}{*}{(2)} & Kelly    & -5.00                        \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -11.50                        \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -8.12                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -9.34                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -10.17                        \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -10.28                        \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{CB0000} Lasso}}}         & \multirow{-3}{*}{(2)} & Kelly    & -11.27                       \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -7.36                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 1.35}   \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -13.78                       \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -1.37                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 7.92}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{Logistic PCA}}                         & \multirow{-3}{*}{(2)} & Kelly    & -6.48                         \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -7.51                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 1.34}   \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -7.82                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -5.77                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 8.78}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{LDA Full}}                             & \multirow{-3}{*}{(2)} & Kelly    & {\color[HTML]{009901} 1.03} \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -9.16                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -6.54                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -16.29                       \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & All      & -3.76                         \\
+\multicolumn{1}{c|}{{\color[HTML]{CB0000} }}                                &                       & Edge     & -1.88                         \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{CB0000} LDA PCA}}}       & \multirow{-3}{*}{(2)} & Kelly    & -10.22   \\
+\hline
+\end{tabular}
+\end{minipage}
+\begin{minipage}{.45\textwidth}
+\begin{tabular}{cccc}
+\hline
+Model                                                                       & Class                 & Strategy & ROI 
+                        \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -3.00                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 4.01}   \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -5.01                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & {\color[HTML]{009901} 0.22}   \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 10.64}  \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{009901} GAM Full}}}      & \multirow{-3}{*}{(2)} & Kelly    & -0.67                         \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -9.13                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 0.93}   \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -13.38                         \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -5.04                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 6.21}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{GAM PCA}}                              & \multirow{-3}{*}{(2)} & Kelly    & -9.01                         \\ \hline
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -2.41                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 4.21}   \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                & \multirow{-3}{*}{(1)} & Kelly    & -4.87                         \\ \cline{2-4} 
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & All      & -0.81                         \\
+\multicolumn{1}{c|}{{\color[HTML]{009901} }}                                &                       & Edge     & {\color[HTML]{009901} 10.26}  \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{{\color[HTML]{009901} Random Forest}}} & \multirow{-3}{*}{(2)} & Kelly    & {\color[HTML]{009901} 0.21}  \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -7.49                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & -1.80                         \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -7.44                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -7.83                         \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 1.41}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{KNN Full}}                             & \multirow{-3}{*}{(2)} & Kelly    & -1.40                        \\ \hline
+\multicolumn{1}{c|}{}                                                       &                       & All      & -12.50                        \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 0.74}   \\
+\multicolumn{1}{c|}{}                                                       & \multirow{-3}{*}{(1)} & Kelly    & -0.81                        \\ \cline{2-4} 
+\multicolumn{1}{c|}{}                                                       &                       & All      & -10.39                        \\
+\multicolumn{1}{c|}{}                                                       &                       & Edge     & {\color[HTML]{009901} 9.29}   \\
+\multicolumn{1}{c|}{\multirow{-6}{*}{KNN PCA}}                              & \multirow{-3}{*}{(2)} & Kelly    & {\color[HTML]{333333} -4.89}  \\
+\hline
+\end{tabular}
+\end{minipage}
+\end{table}
+
+\pagebreak
+
+# Concluding Remarks
+
+Professional men's tennis continues to evolve in its focus on analytics. Through the creation of some more modern tennis metrics, this project found that, among the data available, a player's past overall point winning percentage still tended to be more predictive than most of these variables when measuring their respective influence on match outcomes. 
+
+When looking at which model best predicted match outcomes, we found that the non-parametric model, KNN, produced the lowest Test Error Rate. The more assumption-heavy models, like Logistic Regression, tended to perform the worst in terms of minimizing this classification rate (although not drastically so). Interestingly, KNN was not the profitable model in ROI among those investigated. When looking for the best overall model in terms of both minimizing the classification test error rate while simultaneously maximizing ROI, the Random Forest method proved best in this analysis. 
+
+## Limitations
+
+As discussed in the introduction, there were a number of limitations in this analysis. For starters, the dataset did not include every single match for each player. Since many of the matches are from bigger tournaments and later rounds (and composed of the best players), this factor may bias a lower ranked player's abilities in that there is an underrepresentation of their true average performance across the many variables studied. However, given that the test dataset is a similar 'set' of biased matches, this should not be as detrimental for prediction purposes as it would were the testing dataset entirely representative (thus incongruent) of professional men's tennis matches.
+
+Additionally, this analysis, due in part to the irregularity in the spacing of matches among the players, did not incorporate any time discounting factor in building models and variables in the dataset. Rather, each match, regardless of when, was weighted equally in divising a player's performance for each statsitic. Placing more influence on recent performance with complete data using moving averages (MA models) or other methods may provide a more accurate representation of true player abilities and offer more predictive insights. 
+
+Lastly, the data from the repository is self-charted by a variety of contributors including myself. This may result in minor inconsistencies in shot classification, slightly altering the accuracy of certain variable statistics. However this effect is expected to be minimal, as errors should likely be minor or possibly even cancel each other out.
+
+## Further Study
+
+Moving forward, acquiring access to a dataset with available statistics across every professional match from each year would be ideal to see how, if at all, the results change across different modeling procedures.  This would also help mitigate the biased sample issue discussed above while also providing an opportunity to incorporate a time discounting factor to more accurately project player performance. Pivotally, complete and representative full match data for all professional players would expand the scope of inference regarding the results of various predictive models developed. 
+
+Finally, the same type of analysis could be applied to the Women's Tennis Association (WTA) to compare both variable importance and predictive power between the men's and women's game. 
+
+\pagebreak
+
+# References
+
+1. James, G., Witten, D., Trevor, H., & Tibshirani, R. (2013). *An Introduction to Statistical Learning*. New York : Springer.
+
+2. J. Kelly. "A new interpretation of information rate". *IRE Transactions on Information Theory*, 2(3):917–926, 1956.
+
+3. Lopez, Michael J., and Gregory J. Matthews. "Building an NCAA men’s basketball predictive model and quantifying its success." *Journal of Quantitative Analysis in Sports* 11.1 (2015): 5-12.
+
+4. O’Shannessy, Craig. “The First 4 Shots.” (2017).
+
+5. Sackmann, Jeff. “Tennis Abstract: Match Charting Project Metadata.” \url{tennisabstract.com}, (2018), \url{www.tennisabstract.com/charting/meta.html}.
+
+6. Sipko, Michal, and William Knottenbelt. "Machine learning for the prediction of professional tennis matches." *MEng computing-final year project, Imperial College London* (2015).
+
+7. Tennis Betting | Tennis Results | Tennis Odds. \url{http://www.tennis-data.co.uk/alldata.php} (2019). 
+
+
+
